@@ -1,0 +1,13 @@
+
+🔒 TARA Asset Identification Tool
+   Local:   http://localhost:3000
+   Network: http://192.168.232.1:3000
+   Network: http://192.168.245.1:3000
+   Network: http://172.21.1.1:3000
+   Network: http://192.168.8.46:3000
+   Network: http://172.19.192.1:3000
+   API Provider: DEEPSEEK
+   Model: deepseek-chat
+   Key: sk-1bb0d...
+   Supported uploads: .docx .pdf .txt .json .md .csv
+
