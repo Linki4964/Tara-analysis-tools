@@ -69,11 +69,11 @@ cp .env.example .env
 ```env
 API_PROVIDER=auto
 
-DEEPSEEK_API_KEY=sk-your-deepseek-key
+DEEPSEEK_API_KEY=your-deepseek-api-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 
-ANTHROPIC_API_KEY=sk-ant-your-key
+ANTHROPIC_API_KEY=your-anthropic-api-key
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173

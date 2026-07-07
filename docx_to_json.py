@@ -9,14 +9,8 @@ import json
 import sys
 from pathlib import Path
 from docx import Document
-from openai import OpenAI
-
-# ============================================================
-# 配置 - 在这里修改你的 API 设置
-# ============================================================
-API_KEY = "sk-1bb0d4ef94bc4e12a9b718a4dc196915"
-API_BASE_URL = "https://api.deepseek.com"   # DeepSeek API
-MODEL_NAME = "deepseek-chat"                 # DeepSeek 模型
+from tara_core.json_utils import parse_json_from_llm
+from tara_core.llm import call_llm
 
 # 当前脚本所在目录即为工作目录
 WORK_DIR = Path(__file__).parent.resolve()
@@ -106,37 +100,16 @@ def ai_convert_to_json(doc_data: dict) -> dict:
     """
     调用 AI API 将文档内容转换为结构化 JSON
     """
-    client = OpenAI(
-        api_key=API_KEY,
-        base_url=API_BASE_URL
-    )
-
     prompt = build_ai_prompt(doc_data)
 
     try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": "你是一个精确的 JSON 数据转换器。只返回 JSON，不要有其他内容。"},
-                {"role": "user", "content": prompt}
-            ],
+        result_text = call_llm(
+            "你是一个精确的 JSON 数据转换器。只返回 JSON，不要有其他内容。",
+            prompt,
             temperature=0.1,
-            max_tokens=4096
+            max_tokens=4096,
         )
-
-        result_text = response.choices[0].message.content.strip()
-
-        # 清理可能的 markdown 代码块标记
-        if result_text.startswith("```"):
-            lines = result_text.split("\n")
-            # 移除首行 ```json 和末行 ```
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            result_text = "\n".join(lines)
-
-        ai_result = json.loads(result_text)
+        ai_result = parse_json_from_llm(result_text)
         return ai_result
 
     except json.JSONDecodeError as e:
@@ -188,8 +161,7 @@ def main():
     print("🤖 AI DOCX → JSON 智能转换器")
     print("=" * 60)
     print(f"工作目录: {WORK_DIR}")
-    print(f"API 地址: {API_BASE_URL}")
-    print(f"模型: {MODEL_NAME}")
+    print("API 配置: 从 .env / 环境变量读取")
 
     # 扫描当前目录下的所有 DOCX 文件
     docx_files = sorted(WORK_DIR.glob("*.docx"))
