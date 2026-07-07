@@ -1,0 +1,16 @@
+node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+.claude/
+output_json/
+temples/
+*.log
+server.out.log
+server.err.log
