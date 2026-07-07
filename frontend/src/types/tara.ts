@@ -84,3 +84,54 @@ export type Health = {
   model: string | null;
   hasApiKey: boolean;
 };
+
+export type ApiProvider = 'auto' | 'anthropic' | 'deepseek' | 'local';
+
+export type ApiConfig = {
+  provider: ApiProvider;
+  api_key: string;
+  model: string;
+  base_url: string;
+};
+
+export type SavedConfig = {
+  name: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key: string;
+  active: boolean;
+};
+
+export type ConfigsList = {
+  success: boolean;
+  current: ApiConfig;
+  saved: SavedConfig[];
+};
+
+// ---- History / Persistence types ----
+
+export type RunSummary = {
+  id: string;
+  project_name: string;
+  status: string;
+  document_filename: string | null;
+  created_at: string;
+  updated_at: string;
+  step_count: number;
+};
+
+export type RunDetail = {
+  id: string;
+  project_name: string;
+  status: string;
+  document_filename: string | null;
+  created_at: string;
+  updated_at: string;
+  steps: Array<{
+    step_number: number;
+    step_name: string;
+    result_data: Record<string, unknown>;
+    created_at: string;
+  }>;
+};

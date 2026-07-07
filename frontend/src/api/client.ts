@@ -27,6 +27,17 @@ export function post<T>(path: string, body: unknown): Promise<T> {
   });
 }
 
+export function patch<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: 'PATCH',
+    body: JSON.stringify(body)
+  });
+}
+
+export function del<T>(path: string): Promise<T> {
+  return request<T>(path, { method: 'DELETE' });
+}
+
 export function upload<T>(path: string, file: File): Promise<T> {
   const body = new FormData();
   body.append('file', file);

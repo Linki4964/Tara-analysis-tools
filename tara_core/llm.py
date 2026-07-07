@@ -30,14 +30,16 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.3, max
     info = resolve_provider()
     if not info:
         raise LLMError(
-            "No API key configured. Please set ANTHROPIC_API_KEY or DEEPSEEK_API_KEY in your .env file.",
+            "No API key configured. Please set your API key in Settings, or configure ANTHROPIC_API_KEY / DEEPSEEK_API_KEY in the .env file.",
             500,
         )
 
-    if info.provider == "deepseek":
-        return _call_openai_compatible(info.base_url, info.api_key, info.model, system_prompt, user_prompt, temperature, max_tokens)
+    # Anthropic uses its own Messages API; everything else uses OpenAI-compatible chat completions
+    if info.provider == "anthropic":
+        return _call_anthropic(info.api_key, info.model, system_prompt, user_prompt, temperature, max_tokens)
 
-    return _call_anthropic(info.api_key, info.model, system_prompt, user_prompt, temperature, max_tokens)
+    # deepseek, local (Ollama / LM Studio / vLLM / ...), and any future OpenAI-compatible provider
+    return _call_openai_compatible(info.base_url, info.api_key, info.model, system_prompt, user_prompt, temperature, max_tokens)
 
 
 def _call_openai_compatible(base_url: str, api_key: str, model: str, system_prompt: str, user_prompt: str, temperature: float, max_tokens: int) -> str:

@@ -14,3 +14,4 @@ temples/
 *.log
 server.out.log
 server.err.log
+.tara_configs.json
