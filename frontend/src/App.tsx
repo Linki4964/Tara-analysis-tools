@@ -1,25 +1,33 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   FileJson,
   FileSearch,
   FolderOpen,
   Loader2,
   Map,
+  Plus,
+  Settings,
   Shield,
   ShieldCheck,
   Target,
+  Trash2,
   Upload,
   X
 } from 'lucide-react';
 import { taraApi } from './api/taraApi';
-import type { Asset, AttackPath, Health, ItemDefinition, RiskTreatment, Threat, UploadedDocument } from './types/tara';
+import type { ApiProvider, Asset, AttackPath, Health, ItemDefinition, RiskTreatment, Threat, UploadedDocument } from './types/tara';
 import './styles.css';
 
 type Step = 1 | 2 | 3 | 4 | 5;
@@ -33,13 +41,45 @@ const steps: Array<{ id: Step; label: string }> = [
   { id: 5, label: '风险处置' }
 ];
 
+function detectProvider(key: string): { provider: ApiProvider; label: string } {
+  const trimmed = key.trim();
+  if (!trimmed) {
+    return { provider: 'local', label: '未输入 Key — 将使用本地模型' };
+  }
+  if (trimmed.startsWith('sk-ant-')) {
+    return { provider: 'anthropic', label: '已识别: Anthropic (Claude)' };
+  }
+  if (trimmed.startsWith('sk-')) {
+    return { provider: 'deepseek', label: '已识别: OpenAI 兼容 (DeepSeek 等)' };
+  }
+  return { provider: 'deepseek', label: '已识别: OpenAI 兼容格式' };
+}
+
+const PROVIDER_LABELS: Record<ApiProvider, string> = {
+  auto: '自动检测',
+  anthropic: 'Anthropic (Claude)',
+  deepseek: 'DeepSeek',
+  local: '本地模型 (Ollama/vLLM)',
+};
+
+const PROVIDER_SHORT: Record<ApiProvider, string> = {
+  auto: '自动',
+  anthropic: 'Anthropic',
+  deepseek: 'DeepSeek',
+  local: '本地',
+};
+
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [health, setHealth] = useState<Health | null>(null);
   const [currentStep, setCurrentStep] = useState<Step>(1);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [showExportModal, setShowExportModal] = useState(false);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
 
   const [projectName, setProjectName] = useState('');
   const [document, setDocument] = useState<UploadedDocument | null>(null);
@@ -56,6 +96,22 @@ export default function App() {
   const [attackPaths, setAttackPaths] = useState<AttackPath[]>([]);
   const [riskTreatments, setRiskTreatments] = useState<RiskTreatment[]>([]);
 
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsProvider, setSettingsProvider] = useState<ApiProvider>('auto');
+  const [settingsApiKey, setSettingsApiKey] = useState('');
+  const [settingsModel, setSettingsModel] = useState('');
+  const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+
+  const detected = detectProvider(settingsApiKey);
+  const effectiveProvider: ApiProvider = settingsProvider === 'auto' ? detected.provider : settingsProvider;
+
+  const [showKeySwitcher, setShowKeySwitcher] = useState(false);
+  const [savedConfigs, setSavedConfigs] = useState<import('./types/tara').SavedConfig[]>([]);
+  const [saveName, setSaveName] = useState('');
+  const [showSaveInput, setShowSaveInput] = useState(false);
+
   useEffect(() => {
     taraApi
       .health()
@@ -68,6 +124,47 @@ export default function App() {
     const timer = window.setTimeout(() => setToast(''), 2200);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  // Load a run from history when navigated with loadRunId
+  useEffect(() => {
+    const state = location.state as { loadRunId?: string } | null;
+    if (!state?.loadRunId) return;
+    const runId = state.loadRunId;
+    // Clear the location state so it doesn't re-trigger on re-renders
+    window.history.replaceState({}, window.document.title);
+    taraApi.getRun(runId).then((res) => {
+      const run = res.run;
+      if (!run) return;
+      setCurrentRunId(run.id);
+      if (run.project_name) setProjectName(run.project_name);
+      for (const step of run.steps) {
+        const data = step.result_data;
+        if (step.step_number === 1) {
+          if (data.itemDefinition) setItemDefinition(data.itemDefinition as string);
+          if (data.systemDescription) {
+            setSystemDescription(data.systemDescription as string);
+            setItemDefinition(data.systemDescription as string);
+          }
+          if (data.items) setItems(data.items as ItemDefinition[]);
+        }
+        if (step.step_number === 2) {
+          if (data.projectName) setProjectName(data.projectName as string);
+          if (data.assets) setAssets(data.assets as Asset[]);
+        }
+        if (step.step_number === 3 && data.threats) setThreats(data.threats as Threat[]);
+        if (step.step_number === 4 && data.attackPaths) setAttackPaths(data.attackPaths as AttackPath[]);
+        if (step.step_number === 5 && data.riskTreatments) setRiskTreatments(data.riskTreatments as RiskTreatment[]);
+      }
+      // Jump to the deepest completed step
+      const completedSteps = run.steps.map((s) => s.step_number);
+      if (completedSteps.includes(5)) setCurrentStep(5);
+      else if (completedSteps.includes(4)) setCurrentStep(4);
+      else if (completedSteps.includes(3)) setCurrentStep(3);
+      else if (completedSteps.includes(2)) setCurrentStep(2);
+      else setCurrentStep(1);
+      setToast('已加载历史记录');
+    }).catch(() => {});
+  }, [location.state]);
 
   const canOpenStep = (step: Step) => {
     if (step === 1) return true;
@@ -87,6 +184,120 @@ export default function App() {
     return false;
   };
 
+  function openSettings() {
+    taraApi.getConfig().then((res) => {
+      const cfg = res.config;
+      if (cfg && cfg.provider) {
+        setSettingsProvider(cfg.provider);
+        setSettingsApiKey(cfg.api_key || '');
+        setSettingsModel(cfg.model || '');
+        setSettingsBaseUrl(cfg.base_url || '');
+      }
+    }).catch(() => {});
+    setShowSettings(true);
+  }
+
+  async function saveSettings() {
+    setSettingsSaving(true);
+    setError('');
+    try {
+      const res = await taraApi.setConfig({
+        provider: effectiveProvider,
+        api_key: settingsApiKey,
+        model: settingsModel || undefined,
+        base_url: settingsBaseUrl || undefined,
+      });
+      setHealth({ status: 'ok', provider: res.provider, model: res.model, hasApiKey: res.hasApiKey });
+      setShowSettings(false);
+      setToast('API 配置已保存');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存配置失败');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  async function clearSettings() {
+    setSettingsSaving(true);
+    setError('');
+    try {
+      const res = await taraApi.deleteConfig();
+      setHealth({ status: 'ok', provider: res.provider, model: res.model, hasApiKey: res.hasApiKey });
+      setSettingsApiKey('');
+      setSettingsModel('');
+      setSettingsBaseUrl('');
+      setToast('API 配置已清除，恢复使用 .env 设置');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清除配置失败');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  function loadSavedConfigs() {
+    taraApi.listConfigs().then((res) => setSavedConfigs(res.saved || [])).catch(() => {});
+  }
+
+  async function switchToConfig(name: string) {
+    setError('');
+    try {
+      const res = await taraApi.activateConfig(name);
+      setHealth({ status: 'ok', provider: res.provider, model: res.model, hasApiKey: res.hasApiKey });
+      setToast(`已切换到: ${name}`);
+      setShowKeySwitcher(false);
+      loadSavedConfigs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '切换失败');
+    }
+  }
+
+  async function handleSaveCurrentConfig() {
+    const name = saveName.trim();
+    if (!name) return;
+    setError('');
+    try {
+      await taraApi.saveConfig(name);
+      setSaveName('');
+      setShowSaveInput(false);
+      setToast(`已保存配置: ${name}`);
+      loadSavedConfigs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存失败');
+    }
+  }
+
+  async function handleDeleteConfig(name: string) {
+    setError('');
+    try {
+      await taraApi.deleteSavedConfig(name);
+      setToast(`已删除: ${name}`);
+      loadSavedConfigs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除失败');
+    }
+  }
+
+  async function ensureRun(): Promise<string | null> {
+    if (currentRunId) return currentRunId;
+    try {
+      const res = await taraApi.createRun({ projectName: projectName || undefined });
+      if (res.runId) {
+        setCurrentRunId(res.runId);
+        return res.runId;
+      }
+    } catch { /* DB not available — continue without persistence */ }
+    return null;
+  }
+
+  async function persistAfterStep(stepNumber: number, stepName: string) {
+    // Persistence is best-effort; silently ignore failures
+    const runId = currentRunId;
+    if (!runId) return;
+    try {
+      await taraApi.completeRun(runId);
+    } catch { /* ignore */ }
+  }
+
   async function run<T>(label: string, task: () => Promise<T>, after: (value: T) => void) {
     setBusy(label);
     setError('');
@@ -104,6 +315,7 @@ export default function App() {
     await run('正在从文档中提取文本...', () => taraApi.uploadExtract(file), async (data) => {
       setDocument(data);
       if (!projectName) setProjectName(data.metadata.filename.replace(/\.[^.]+$/, ''));
+      await ensureRun();
 
       let sourceText = data.extractedText;
       if (data.metadata.fileType === '.docx' && data.extractedHtml) {
@@ -128,12 +340,13 @@ export default function App() {
   async function extractItemDefinition(text: string, filename?: string) {
     await run(
       'AI 正在识别 Item Definition...',
-      () => taraApi.extractItems({ extractedText: text, filename }),
+      () => taraApi.extractItems({ extractedText: text, filename, runId: currentRunId || undefined }),
       (data) => {
         setItemDefinition(data.systemDescription);
         setSystemDescription(data.systemDescription);
         setItems(data.items || []);
         setCurrentStep(2);
+        void persistAfterStep(1, 'item_definition');
       }
     );
   }
@@ -157,10 +370,11 @@ export default function App() {
     }
     run(
       '正在分析系统并识别资产...',
-      () => taraApi.generateAssets({ projectName, systemDescription, optionalInfo }),
+      () => taraApi.generateAssets({ projectName, systemDescription, optionalInfo, runId: currentRunId || undefined }),
       (data) => {
         setAssets(data.assets || []);
         setCurrentStep(3);
+        void persistAfterStep(2, 'assets');
       }
     );
   }
@@ -168,10 +382,11 @@ export default function App() {
   function handleAnalyzeThreats() {
     run(
       '正在分析威胁和损害场景...',
-      () => taraApi.analyzeThreats({ projectName, systemDescription: `${systemDescription}\n\n${threatContext}`.trim(), assets }),
+      () => taraApi.analyzeThreats({ projectName, systemDescription: `${systemDescription}\n\n${threatContext}`.trim(), assets, runId: currentRunId || undefined }),
       (data) => {
         setThreats(data.threats || []);
         setCurrentStep(4);
+        void persistAfterStep(3, 'threats');
       }
     );
   }
@@ -179,10 +394,11 @@ export default function App() {
   function handleGenerateAttackPaths() {
     run(
       '正在构建攻击路径...',
-      () => taraApi.generateAttackPaths({ projectName, systemDescription, assets, threats }),
+      () => taraApi.generateAttackPaths({ projectName, systemDescription, assets, threats, runId: currentRunId || undefined }),
       (data) => {
         setAttackPaths(data.attackPaths || []);
         setCurrentStep(5);
+        void persistAfterStep(4, 'attack_paths');
       }
     );
   }
@@ -190,10 +406,11 @@ export default function App() {
   function handleGenerateRiskTreatment() {
     run(
       '正在生成风险处置方案...',
-      () => taraApi.generateRiskTreatment({ projectName, systemDescription, assets, threats, attackPaths }),
+      () => taraApi.generateRiskTreatment({ projectName, systemDescription, assets, threats, attackPaths, runId: currentRunId || undefined }),
       (data) => {
         setRiskTreatments(data.riskTreatments || []);
         setShowExportModal(true);
+        void persistAfterStep(5, 'risk_treatments');
       }
     );
   }
@@ -225,15 +442,101 @@ export default function App() {
           <Shield size={34} className="logo-icon" />
           <h1 className="title">TARA 分析与风险处置工具</h1>
           <span className="badge">ISO/SAE 21434</span>
+          <button className="btn-back" type="button" onClick={() => navigate('/')} title="返回首页">
+            <ArrowLeft size={18} />
+            <span>返回</span>
+          </button>
         </div>
         <div className="header-center">
           <span className="project-display-name">{projectName}</span>
         </div>
         <div className="header-right">
           <span className={`status-indicator ${health?.hasApiKey ? 'status-connected' : health ? 'status-error' : 'status-disconnected'}`} />
-          <span className="status-text">
-            {health?.hasApiKey ? `API 就绪 (${health.provider})` : health ? 'API Key 未设置' : '正在检查 API...'}
-          </span>
+
+          <div className="key-switcher">
+            <button
+              className="key-switcher-trigger"
+              type="button"
+              onClick={() => { setShowKeySwitcher(!showKeySwitcher); if (!showKeySwitcher) loadSavedConfigs(); }}
+            >
+              <span className="status-text">
+                {health?.hasApiKey ? `${PROVIDER_SHORT[health.provider as ApiProvider] || health.provider}` : health ? '未设置' : '检查中...'}
+              </span>
+              <ChevronDown size={14} className={`key-switcher-arrow ${showKeySwitcher ? 'key-switcher-arrow--open' : ''}`} />
+            </button>
+
+            {showKeySwitcher && (
+              <>
+                <button className="key-switcher-backdrop" type="button" onClick={() => setShowKeySwitcher(false)} aria-label="关闭" />
+                <div className="key-switcher-menu">
+                  <div className="key-switcher-menu-header">已保存的 API Keys</div>
+
+                  {savedConfigs.length === 0 && (
+                    <div className="key-switcher-empty">暂无已保存的 Key — 在设置中保存当前配置</div>
+                  )}
+
+                  {savedConfigs.map((cfg) => (
+                    <div
+                      key={cfg.name}
+                      className={`key-switcher-item ${cfg.active ? 'key-switcher-item--active' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        className="key-switcher-item-main"
+                        onClick={() => switchToConfig(cfg.name)}
+                      >
+                        <span className={`key-switcher-dot ${cfg.active ? 'key-switcher-dot--active' : ''}`} />
+                        <span className="key-switcher-item-name">{cfg.name}</span>
+                        <span className="key-switcher-item-provider">{cfg.provider}</span>
+                        <span className="key-switcher-item-key">{cfg.api_key || '(无 key)'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="key-switcher-item-delete"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteConfig(cfg.name); }}
+                        aria-label={`删除 ${cfg.name}`}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+
+                  <div className="key-switcher-menu-footer">
+                    {showSaveInput ? (
+                      <div className="key-switcher-save-row">
+                        <input
+                          className="form-input key-switcher-save-input"
+                          value={saveName}
+                          onChange={(e) => setSaveName(e.target.value)}
+                          placeholder="输入名称..."
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleSaveCurrentConfig(); }}
+                        />
+                        <button className="btn-export btn-export--small" type="button" onClick={handleSaveCurrentConfig}>
+                          <Check size={14} />
+                        </button>
+                        <button className="btn-export btn-export--secondary btn-export--small" type="button" onClick={() => setShowSaveInput(false)}>
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="key-switcher-save-btn"
+                        type="button"
+                        onClick={() => setShowSaveInput(true)}
+                        disabled={!health?.hasApiKey}
+                      >
+                        <Plus size={14} /> 保存当前配置
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <button className="btn-settings" type="button" onClick={openSettings} title="API 设置">
+            <Settings size={18} />
+          </button>
         </div>
       </header>
 
@@ -420,6 +723,133 @@ export default function App() {
               </button>
               <button className="btn-export btn-export--secondary" type="button" onClick={() => setShowExportModal(false)}>
                 关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="modal">
+          <button className="modal-overlay" type="button" onClick={() => setShowSettings(false)} aria-label="关闭" />
+          <div className="modal-content modal-settings">
+            <div className="modal-header">
+              <h3><Settings size={20} /> API 设置</h3>
+              <button className="modal-close" type="button" onClick={() => setShowSettings(false)} aria-label="关闭">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="settings-body">
+              <Field label="模型提供商">
+                <div className="provider-auto-detect">
+                  <div className={`auto-detect-result ${settingsApiKey.trim() ? 'auto-detect-result--found' : ''}`}>
+                    <span className={`auto-detect-dot ${settingsApiKey.trim() ? 'auto-detect-dot--active' : ''}`} />
+                    <span className="auto-detect-label">
+                      {settingsProvider === 'auto' ? detected.label : `手动选择: ${PROVIDER_LABELS[settingsProvider]}`}
+                    </span>
+                  </div>
+                  <div className="provider-tabs provider-tabs--compact">
+                    <button
+                      type="button"
+                      className={`provider-tab provider-tab--small ${settingsProvider === 'auto' ? 'provider-tab--active' : ''}`}
+                      onClick={() => setSettingsProvider('auto')}
+                    >
+                      自动
+                    </button>
+                    {(['anthropic', 'deepseek', 'local'] as ApiProvider[]).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={`provider-tab provider-tab--small ${settingsProvider === value ? 'provider-tab--active' : ''}`}
+                        onClick={() => setSettingsProvider(value)}
+                      >
+                        {PROVIDER_SHORT[value]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </Field>
+
+              <Field label="API Key">
+                <div className="input-with-icon">
+                  <input
+                    className="form-input"
+                    type={showApiKey ? 'text' : 'password'}
+                    value={settingsApiKey}
+                    onChange={(event) => setSettingsApiKey(event.target.value)}
+                    placeholder={
+                      effectiveProvider === 'local'
+                        ? '本地模型可留空 (默认 ollama)'
+                        : '输入你的 API Key'
+                    }
+                  />
+                  <button
+                    type="button"
+                    className="input-icon-btn"
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    aria-label={showApiKey ? '隐藏' : '显示'}
+                  >
+                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </Field>
+
+              <Field label="模型名称">
+                <input
+                  className="form-input"
+                  value={settingsModel}
+                  onChange={(event) => setSettingsModel(event.target.value)}
+                  placeholder={
+                    effectiveProvider === 'anthropic'
+                      ? 'claude-sonnet-4-20250514'
+                      : effectiveProvider === 'deepseek'
+                        ? 'deepseek-chat'
+                        : 'llama3'
+                  }
+                />
+              </Field>
+
+              {effectiveProvider !== 'anthropic' && (
+                <Field label="Base URL">
+                  <input
+                    className="form-input"
+                    value={settingsBaseUrl}
+                    onChange={(event) => setSettingsBaseUrl(event.target.value)}
+                    placeholder={
+                      effectiveProvider === 'deepseek'
+                        ? 'https://api.deepseek.com'
+                        : 'http://localhost:11434/v1'
+                    }
+                  />
+                </Field>
+              )}
+
+              {settingsProvider === 'local' && (
+                <div className="settings-hint">
+                  <Shield size={14} />
+                  <span>本地模型使用 OpenAI 兼容 API（支持 Ollama、LM Studio、vLLM 等）。</span>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button
+                className="btn-export"
+                type="button"
+                onClick={saveSettings}
+                disabled={settingsSaving || (!settingsApiKey && settingsProvider !== 'local')}
+              >
+                {settingsSaving ? <Loader2 className="spinner-icon" size={16} /> : <Check size={16} />}
+                保存配置
+              </button>
+              <button
+                className="btn-export btn-export--secondary"
+                type="button"
+                onClick={clearSettings}
+                disabled={settingsSaving}
+              >
+                <Trash2 size={16} /> 清除配置
               </button>
             </div>
           </div>
