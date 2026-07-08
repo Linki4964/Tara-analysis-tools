@@ -446,6 +446,19 @@ button:disabled {
   box-shadow: 0 4px 18px rgba(91, 141, 239, 0.45);
 }
 
+.btn-generate--secondary {
+  color: var(--success);
+  background: var(--success-dim);
+  border: 1px solid rgba(76, 175, 147, 0.28);
+  box-shadow: none;
+}
+
+.btn-generate--secondary:hover:not(:disabled) {
+  color: #fff;
+  background: var(--success);
+  box-shadow: 0 4px 18px rgba(76, 175, 147, 0.28);
+}
+
 .loading-area {
   text-align: center;
   padding: 12px 0;

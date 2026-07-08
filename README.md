@@ -6,6 +6,7 @@
 
 - 前端：React + TypeScript + Vite
 - 后端：Python + FastAPI
+- 数据库：PostgreSQL，用于保存每次完整 TARA 运行历史
 - 业务内核：`tara_core` Python 模块
 - AI Provider：DeepSeek 或 Anthropic，可通过环境变量切换
 
@@ -29,6 +30,7 @@
 │   ├── llm.py             # LLM 调用适配
 │   └── json_utils.py      # AI JSON 响应清洗
 ├── docx_to_json.py        # DOCX 转 JSON CLI 辅助脚本
+├── scripts/               # 数据库初始化脚本
 ├── requirements.txt       # Python 依赖
 ├── package.json           # 前端/后端开发脚本
 └── .env.example           # 环境变量示例
@@ -77,6 +79,25 @@ ANTHROPIC_API_KEY=your-anthropic-api-key
 ANTHROPIC_MODEL=claude-sonnet-4-20250514
 
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+
+DATABASE_URL=postgresql://postgres:your-postgres-password@localhost:5433/tara_analysis
+```
+
+### 4. 初始化 PostgreSQL
+
+项目默认使用本地 PostgreSQL 保存历史记录。初始化数据库：
+
+```powershell
+$env:PGPASSWORD="your-postgres-password"
+.\scripts\init_database.ps1 -Port 5433 -User postgres -Database tara_analysis
+```
+
+如果不想通过环境变量传密码，也可以直接运行脚本后按提示输入密码。脚本会自动创建 `tara_analysis` 数据库，并执行 `scripts/init_database.sql` 创建 `runs` 与 `step_results` 表。
+
+如果 PostgreSQL 客户端命令 `psql` 没有加入 PATH，也可以直接使用 Python 初始化：
+
+```powershell
+python .\scripts\init_database.py --host localhost --port 5433 --user postgres --password your-postgres-password --database tara_analysis
 ```
 
 ## 启动开发环境
@@ -137,6 +158,13 @@ frontend/dist/
 - `POST /api/analyze-threats`
 - `POST /api/generate-attack-paths`
 - `POST /api/generate-risk-treatment`
+- `GET /api/runs`
+- `GET /api/runs/{run_id}`
+- `POST /api/runs`
+- `POST /api/runs/{run_id}/complete`
+- `DELETE /api/runs/{run_id}`
+
+运行中的每个分析项目会在 PostgreSQL 中保存项目记录和各步骤结果。前端首页和历史页可查看、恢复和删除历史记录。
 
 ## 可维护性说明
 

@@ -277,10 +277,13 @@ export default function App() {
     }
   }
 
-  async function ensureRun(): Promise<string | null> {
+  async function ensureRun(projectNameOverride?: string, documentFilename?: string): Promise<string | null> {
     if (currentRunId) return currentRunId;
     try {
-      const res = await taraApi.createRun({ projectName: projectName || undefined });
+      const res = await taraApi.createRun({
+        projectName: projectNameOverride || projectName || undefined,
+        documentFilename,
+      });
       if (res.runId) {
         setCurrentRunId(res.runId);
         return res.runId;
@@ -292,18 +295,18 @@ export default function App() {
   async function persistAfterStep(stepNumber: number, stepName: string) {
     // Persistence is best-effort; silently ignore failures
     const runId = currentRunId;
-    if (!runId) return;
+    if (!runId || stepNumber !== 5) return;
     try {
       await taraApi.completeRun(runId);
     } catch { /* ignore */ }
   }
 
-  async function run<T>(label: string, task: () => Promise<T>, after: (value: T) => void) {
+  async function run<T>(label: string, task: () => Promise<T>, after: (value: T) => void | Promise<void>) {
     setBusy(label);
     setError('');
     try {
       const value = await task();
-      after(value);
+      await after(value);
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     } finally {
@@ -314,8 +317,9 @@ export default function App() {
   async function handleUpload(file: File) {
     await run('正在从文档中提取文本...', () => taraApi.uploadExtract(file), async (data) => {
       setDocument(data);
-      if (!projectName) setProjectName(data.metadata.filename.replace(/\.[^.]+$/, ''));
-      await ensureRun();
+      const nextProjectName = projectName || data.metadata.filename.replace(/\.[^.]+$/, '');
+      if (!projectName) setProjectName(nextProjectName);
+      const runId = await ensureRun(nextProjectName, data.metadata.filename);
 
       let sourceText = data.extractedText;
       if (data.metadata.fileType === '.docx' && data.extractedHtml) {
@@ -333,14 +337,17 @@ export default function App() {
         }
       }
 
-      await extractItemDefinition(sourceText, data.metadata.filename);
+      await extractItemDefinition(sourceText, data.metadata.filename, runId);
     });
   }
 
-  async function extractItemDefinition(text: string, filename?: string) {
+  async function extractItemDefinition(text: string, filename?: string, runIdOverride?: string | null) {
     await run(
       'AI 正在识别 Item Definition...',
-      () => taraApi.extractItems({ extractedText: text, filename, runId: currentRunId || undefined }),
+      async () => {
+        const runId = runIdOverride || await ensureRun(projectName || filename?.replace(/\.[^.]+$/, ''), filename);
+        return taraApi.extractItems({ extractedText: text, filename, runId: runId || undefined });
+      },
       (data) => {
         setItemDefinition(data.systemDescription);
         setSystemDescription(data.systemDescription);
@@ -370,7 +377,10 @@ export default function App() {
     }
     run(
       '正在分析系统并识别资产...',
-      () => taraApi.generateAssets({ projectName, systemDescription, optionalInfo, runId: currentRunId || undefined }),
+      async () => {
+        const runId = await ensureRun(projectName);
+        return taraApi.generateAssets({ projectName, systemDescription, optionalInfo, runId: runId || undefined });
+      },
       (data) => {
         setAssets(data.assets || []);
         setCurrentStep(3);
@@ -382,7 +392,10 @@ export default function App() {
   function handleAnalyzeThreats() {
     run(
       '正在分析威胁和损害场景...',
-      () => taraApi.analyzeThreats({ projectName, systemDescription: `${systemDescription}\n\n${threatContext}`.trim(), assets, runId: currentRunId || undefined }),
+      async () => {
+        const runId = await ensureRun(projectName);
+        return taraApi.analyzeThreats({ projectName, systemDescription: `${systemDescription}\n\n${threatContext}`.trim(), assets, runId: runId || undefined });
+      },
       (data) => {
         setThreats(data.threats || []);
         setCurrentStep(4);
@@ -394,7 +407,10 @@ export default function App() {
   function handleGenerateAttackPaths() {
     run(
       '正在构建攻击路径...',
-      () => taraApi.generateAttackPaths({ projectName, systemDescription, assets, threats, runId: currentRunId || undefined }),
+      async () => {
+        const runId = await ensureRun(projectName);
+        return taraApi.generateAttackPaths({ projectName, systemDescription, assets, threats, runId: runId || undefined });
+      },
       (data) => {
         setAttackPaths(data.attackPaths || []);
         setCurrentStep(5);
@@ -406,13 +422,101 @@ export default function App() {
   function handleGenerateRiskTreatment() {
     run(
       '正在生成风险处置方案...',
-      () => taraApi.generateRiskTreatment({ projectName, systemDescription, assets, threats, attackPaths, runId: currentRunId || undefined }),
+      async () => {
+        const runId = await ensureRun(projectName);
+        return taraApi.generateRiskTreatment({ projectName, systemDescription, assets, threats, attackPaths, runId: runId || undefined });
+      },
       (data) => {
         setRiskTreatments(data.riskTreatments || []);
         setShowExportModal(true);
         void persistAfterStep(5, 'risk_treatments');
       }
     );
+  }
+
+  async function handleRunFullAnalysis() {
+    const initialText = (systemDescription || itemDefinition || manualItemDefinition).trim();
+    if (initialText.length < 20) {
+      setError('请先上传文档，或输入至少 20 个字符的系统描述。');
+      return;
+    }
+
+    setError('');
+    setShowExportModal(false);
+
+    try {
+      const runId = await ensureRun(projectName || document?.metadata.filename?.replace(/\.[^.]+$/, ''), document?.metadata.filename);
+      let nextSystemDescription = initialText;
+      let nextItems = items;
+
+      if (!itemDefinition) {
+        setBusy('AI 正在识别 Item Definition...');
+        const itemData = await taraApi.extractItems({
+          extractedText: initialText,
+          filename: document?.metadata.filename,
+          runId: runId || undefined,
+        });
+        nextSystemDescription = itemData.systemDescription;
+        nextItems = itemData.items || [];
+        setItemDefinition(itemData.systemDescription);
+        setSystemDescription(itemData.systemDescription);
+        setItems(nextItems);
+        setCurrentStep(2);
+      }
+
+      setBusy('正在分析系统并识别资产...');
+      const assetData = await taraApi.generateAssets({
+        projectName,
+        systemDescription: nextSystemDescription,
+        optionalInfo,
+        runId: runId || undefined,
+      });
+      const nextAssets = assetData.assets || [];
+      setAssets(nextAssets);
+      setCurrentStep(3);
+
+      setBusy('正在分析威胁和损害场景...');
+      const threatData = await taraApi.analyzeThreats({
+        projectName,
+        systemDescription: `${nextSystemDescription}\n\n${threatContext}`.trim(),
+        assets: nextAssets,
+        runId: runId || undefined,
+      });
+      const nextThreats = threatData.threats || [];
+      setThreats(nextThreats);
+      setCurrentStep(4);
+
+      setBusy('正在构建攻击路径...');
+      const attackPathData = await taraApi.generateAttackPaths({
+        projectName,
+        systemDescription: nextSystemDescription,
+        assets: nextAssets,
+        threats: nextThreats,
+        runId: runId || undefined,
+      });
+      const nextAttackPaths = attackPathData.attackPaths || [];
+      setAttackPaths(nextAttackPaths);
+      setCurrentStep(5);
+
+      setBusy('正在生成风险处置方案...');
+      const treatmentData = await taraApi.generateRiskTreatment({
+        projectName,
+        systemDescription: nextSystemDescription,
+        assets: nextAssets,
+        threats: nextThreats,
+        attackPaths: nextAttackPaths,
+        runId: runId || undefined,
+      });
+      setRiskTreatments(treatmentData.riskTreatments || []);
+
+      if (runId) await taraApi.completeRun(runId);
+      setToast('完整分析已完成并保存');
+      setShowExportModal(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '完整分析失败');
+    } finally {
+      setBusy('');
+    }
   }
 
   function exportJson(key: JsonKey | 'full') {
@@ -619,6 +723,9 @@ export default function App() {
                 <button className="btn-generate" type="button" onClick={useManualInput} disabled={Boolean(busy)}>
                   <FileSearch size={20} /> 提取相关项定义
                 </button>
+                <button className="btn-generate btn-generate--secondary" type="button" onClick={handleRunFullAnalysis} disabled={Boolean(busy)}>
+                  <ShieldCheck size={20} /> 一键完整分析
+                </button>
               </>
             }
             right={<Step1Result items={items} itemDefinition={itemDefinition} structuredDocxJson={structuredDocxJson} filename={document?.metadata.filename} />}
@@ -643,6 +750,9 @@ export default function App() {
                 <button className="btn-generate" type="button" onClick={handleGenerateAssets} disabled={Boolean(busy)}>
                   <Activity size={20} /> 生成资产清单
                 </button>
+                <button className="btn-generate btn-generate--secondary" type="button" onClick={handleRunFullAnalysis} disabled={Boolean(busy)}>
+                  <ShieldCheck size={20} /> 一键完整分析
+                </button>
                 <BusyBlock busy={busy} match={['正在分析系统并识别资产...']} />
               </>
             }
@@ -665,6 +775,9 @@ export default function App() {
                 <button className="btn-generate" type="button" onClick={handleAnalyzeThreats} disabled={Boolean(busy) || assets.length === 0}>
                   <AlertTriangle size={20} /> 分析威胁场景
                 </button>
+                <button className="btn-generate btn-generate--secondary" type="button" onClick={handleRunFullAnalysis} disabled={Boolean(busy)}>
+                  <ShieldCheck size={20} /> 一键重新完整分析
+                </button>
                 <BusyBlock busy={busy} match={['正在分析威胁和损害场景...']} />
               </>
             }
@@ -684,6 +797,9 @@ export default function App() {
                 <button className="btn-generate" type="button" onClick={handleGenerateAttackPaths} disabled={Boolean(busy) || threats.length === 0}>
                   <Target size={20} /> 生成攻击路径
                 </button>
+                <button className="btn-generate btn-generate--secondary" type="button" onClick={handleRunFullAnalysis} disabled={Boolean(busy)}>
+                  <ShieldCheck size={20} /> 一键重新完整分析
+                </button>
                 <BusyBlock busy={busy} match={['正在构建攻击路径...']} />
               </>
             }
@@ -702,6 +818,9 @@ export default function App() {
                 <ContextSummary title={`已生成 ${attackPaths.length} 条攻击路径`} lines={attackPaths.slice(0, 8).map((path) => `${path.attackPathId} ${path.attackPathName} [${path.attackFeasibility}]`)} />
                 <button className="btn-generate" type="button" onClick={handleGenerateRiskTreatment} disabled={Boolean(busy) || attackPaths.length === 0}>
                   <ShieldCheck size={20} /> 生成处置方案
+                </button>
+                <button className="btn-generate btn-generate--secondary" type="button" onClick={handleRunFullAnalysis} disabled={Boolean(busy)}>
+                  <ShieldCheck size={20} /> 一键重新完整分析
                 </button>
                 <BusyBlock busy={busy} match={['正在生成风险处置方案...']} />
               </>
