@@ -7,6 +7,8 @@ works without a database.
 import os
 from typing import Optional
 
+from tara_core.config import load_env_file
+
 _pool: Optional["asyncpg.Pool"] = None  # type: ignore[name-defined]
 
 
@@ -14,6 +16,7 @@ async def get_pool() -> Optional["asyncpg.Pool"]:  # type: ignore[name-defined]
     """Return the shared connection pool, or None when DB is not configured."""
     global _pool
 
+    load_env_file()
     url = os.getenv("DATABASE_URL", "").strip()
     if not url:
         return None
@@ -26,6 +29,11 @@ async def get_pool() -> Optional["asyncpg.Pool"]:  # type: ignore[name-defined]
         _pool = await asyncpg.create_pool(url, min_size=1, max_size=5)
 
     return _pool
+
+
+def is_database_configured() -> bool:
+    load_env_file()
+    return bool(os.getenv("DATABASE_URL", "").strip())
 
 
 async def init_db() -> None:

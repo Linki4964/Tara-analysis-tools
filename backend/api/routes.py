@@ -11,6 +11,7 @@ from backend.schemas import (
     ThreatRequest,
 )
 from backend.services.file_extraction import extract_upload
+from backend.core.database import is_database_configured
 from tara_core.config import (
     activate_saved_config,
     clear_runtime_config,
@@ -213,6 +214,7 @@ def health():
         "provider": info.provider if info else "none",
         "model": info.model if info else None,
         "hasApiKey": bool(info),
+        "historyStorage": "enabled" if is_database_configured() else "disabled",
     }
 
 
