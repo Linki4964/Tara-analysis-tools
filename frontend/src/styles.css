@@ -658,6 +658,31 @@ button:disabled {
   border: 1px solid rgba(91, 141, 239, 0.2);
 }
 
+.badge-sl-1 {
+  color: var(--success);
+  background: var(--success-dim);
+  border: 1px solid rgba(76, 175, 147, 0.2);
+}
+
+.badge-sl-2 {
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+}
+
+.badge-sl-3 {
+  color: var(--warning);
+  background: var(--warning-dim);
+  border: 1px solid rgba(240, 163, 85, 0.2);
+}
+
+.badge-sl-4,
+.badge-sl-5 {
+  color: var(--error);
+  background: var(--error-dim);
+  border: 1px solid rgba(224, 85, 106, 0.25);
+}
+
 .badge-control {
   color: var(--text-secondary);
   background: var(--bg-tertiary);
@@ -895,6 +920,23 @@ button:disabled {
   margin: 8px 0 12px;
 }
 
+.risk-score-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.risk-score-grid span {
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .attack-step {
   display: flex;
   gap: 10px;
@@ -953,6 +995,15 @@ button:disabled {
 
 .btn-export--secondary:hover {
   background: var(--bg-card);
+}
+
+.btn-export--excel {
+  color: #fff;
+  background: #217346;
+}
+
+.btn-export--excel:hover {
+  background: #2d8c56;
 }
 
 .modal {
@@ -2008,4 +2059,257 @@ button:disabled {
 .home-project-card:hover .home-project-card-action {
   color: var(--accent);
   background: var(--accent-dim);
+}
+
+/* ---- ID Reference Tags ---- */
+
+.result-card-id-tag {
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid rgba(91, 141, 239, 0.25);
+  flex-shrink: 0;
+}
+
+.result-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.id-reference {
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+/* ---- S/F/O/P Score Grid ---- */
+
+.sfop-scores {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.sfop-score {
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  cursor: help;
+}
+
+.sfop-s { border-left: 3px solid var(--error); }
+.sfop-f { border-left: 3px solid var(--warning); }
+.sfop-o { border-left: 3px solid var(--accent); }
+.sfop-p { border-left: 3px solid var(--success); }
+
+.sfop-total {
+  font-size: 12px;
+  font-weight: 800;
+  padding: 3px 10px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+.sfop-total--minor { color: var(--success); background: var(--success-dim); }
+.sfop-total--moderate { color: var(--warning); background: var(--warning-dim); }
+.sfop-total--major { color: #e88a4a; background: rgba(232, 138, 74, 0.12); }
+.sfop-total--severe { color: var(--error); background: var(--error-dim); }
+
+/* ---- Damage Scenario ID ---- */
+
+.damage-scenario-id {
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* ---- 5-Dimension Feasibility Grid ---- */
+
+.feasibility-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.feasibility-grid--inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.feasibility-dim {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  background: var(--bg-card);
+  border-radius: 4px;
+  cursor: help;
+  transition: background var(--transition);
+}
+
+.feasibility-dim:hover {
+  background: var(--bg-secondary);
+}
+
+.feasibility-dim-label {
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.feasibility-dim-score {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--accent);
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+}
+
+.feasibility-dim-desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.3;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feasibility-total {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--warning);
+  padding: 4px 0;
+  border-top: 1px solid var(--border-color);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+
+.feasibility-grid--inline .feasibility-dim {
+  flex-direction: row;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+.feasibility-grid--inline .feasibility-dim-score {
+  font-size: 13px;
+}
+
+.feasibility-grid--inline .feasibility-dim-desc {
+  display: none;
+}
+
+.feasibility-grid--inline .feasibility-total {
+  width: 100%;
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* ---- Cybersecurity Section (CsGO / CsCL) ---- */
+
+.cybersecurity-section {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cs-section-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--success);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 2px;
+}
+
+.cs-section-title--retain {
+  color: var(--text-muted);
+}
+
+.cs-goal,
+.cs-claim {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cs-goal .id-reference,
+.cs-claim .id-reference {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.cs-text {
+  color: var(--text-secondary);
+}
+
+.cs-requirement {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border-radius: 4px;
+  line-height: 1.6;
+}
+
+.cs-requirement .cs-text {
+  display: block;
+  margin-top: 2px;
+}
+
+/* ---- Risk Score Grid Update ---- */
+
+.risk-score-grid {
+  display: flex;
+  gap: 16px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+  margin: 8px 0;
 }

@@ -419,6 +419,25 @@ export default function App() {
     );
   }
 
+  async function handleExportExcel() {
+    setBusy('正在导出 Excel...');
+    setError('');
+    try {
+      await taraApi.exportExcel({
+        projectName,
+        assets,
+        threats,
+        attackPaths,
+        riskTreatments,
+      });
+      setToast('Excel 已导出');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导出失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
   function handleGenerateRiskTreatment() {
     run(
       '正在生成风险处置方案...',
@@ -840,6 +859,14 @@ export default function App() {
               <button className="btn-export" type="button" onClick={() => exportJson('full')}>
                 <Download size={16} /> 导出 JSON
               </button>
+              <button
+                className="btn-export btn-export--excel"
+                type="button"
+                onClick={handleExportExcel}
+                disabled={riskTreatments.length === 0 || Boolean(busy)}
+              >
+                <Download size={16} /> 导出 Excel
+              </button>
               <button className="btn-export btn-export--secondary" type="button" onClick={() => setShowExportModal(false)}>
                 关闭
               </button>
@@ -1107,9 +1134,12 @@ function AssetResults({ assets, onExport, onCopy }: { assets: Asset[]; onExport:
       <SummaryBar items={[['资产总数', assets.length], ['资产类型', new Set(assets.map((asset) => asset.assetType)).size]]} />
       <div className="result-list">
         {assets.map((asset) => (
-          <div className="result-card" key={asset.assetName}>
+          <div className="result-card" key={asset.assetId || asset.assetName}>
             <div className="result-card-header">
-              <span className="result-card-title">{asset.assetName}</span>
+              <div className="result-card-title-row">
+                <span className="result-card-id-tag">{asset.assetId || '-'}</span>
+                <span className="result-card-title">{asset.assetName}</span>
+              </div>
               <span className="result-card-badge badge-asset">{asset.assetType}</span>
             </div>
             <div className="result-card-desc">{asset.description}</div>
@@ -1118,13 +1148,27 @@ function AssetResults({ assets, onExport, onCopy }: { assets: Asset[]; onExport:
               <div className="damage-scenarios">
                 <div className="damage-scenarios-title">损害场景 ({asset.damageScenarios.length})</div>
                 {asset.damageScenarios.map((scenario) => (
-                  <div className="damage-scenario-item" key={scenario.scenarioName}>
+                  <div className="damage-scenario-item" key={scenario.scenarioId || scenario.scenarioName}>
                     <div className="damage-scenario-header">
+                      <span className="damage-scenario-id">{scenario.scenarioId || '-'}</span>
                       <span className="damage-scenario-name">{scenario.scenarioName}</span>
                       <SeverityBadge value={scenario.severity} />
                       <span className="result-card-badge badge-stride">{scenario.affectedProperty}</span>
                     </div>
                     <div className="damage-scenario-desc">{scenario.description}</div>
+                    {(scenario.safetyScore !== undefined || scenario.safety !== undefined) && (
+                      <div className="sfop-scores">
+                        <span className="sfop-score sfop-s" title={scenario.safetyRationale || ''}>S: {scenario.safetyScore ?? scenario.safety ?? '-'}</span>
+                        <span className="sfop-score sfop-f" title={scenario.financialRationale || ''}>F: {scenario.financialScore ?? scenario.financial ?? '-'}</span>
+                        <span className="sfop-score sfop-o" title={scenario.operationalRationale || ''}>O: {scenario.operationalScore ?? scenario.operational ?? '-'}</span>
+                        <span className="sfop-score sfop-p" title={scenario.privacyRationale || ''}>P: {scenario.privacyScore ?? scenario.privacy ?? '-'}</span>
+                        {scenario.damageImpactTotal !== undefined && (
+                          <span className={`sfop-total sfop-total--${(scenario.damageImpactLevel || '').toLowerCase()}`}>
+                            = {scenario.damageImpactTotal} [{scenario.damageImpactLevelLabel || scenario.damageImpactLevel}]
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1157,15 +1201,16 @@ function ThreatResults({ threats, onExport, onCopy }: { threats: Threat[]; onExp
         {threats.map((threat) => (
           <div className="result-card" key={threat.threatId}>
             <div className="result-card-header">
-              <span className="result-card-title">{threat.threatId} - {threat.threatName}</span>
+              <span className="result-card-id-tag">{threat.threatId}</span>
+              <span className="result-card-title">{threat.threatName}</span>
               <div className="badge-row">
                 <span className="result-card-badge badge-stride">{threat.strideCategory}</span>
                 <SeverityBadge value={threat.threatSeverity} />
               </div>
             </div>
             <div className="result-card-desc">{threat.description}</div>
-            <div className="result-card-meta"><strong>目标资产：</strong>{threat.targetAsset}</div>
-            <div className="result-card-meta"><strong>损害场景：</strong>{threat.damageScenario}</div>
+            <div className="result-card-meta"><strong>目标资产：</strong>{threat.targetAsset}{threat.targetAssetName ? ` (${threat.targetAssetName})` : ''}</div>
+            <div className="result-card-meta"><strong>关联损害场景：</strong><span className="id-reference">{threat.relatedDamageScenarioId || threat.damageScenario || '-'}</span></div>
             <div className="result-card-meta"><strong>受影响属性：</strong>{threat.affectedSecurityProperty}</div>
           </div>
         ))}
@@ -1184,14 +1229,51 @@ function AttackPathResults({ attackPaths, onExport, onCopy }: { attackPaths: Att
         {attackPaths.map((path) => (
           <div className="result-card" key={path.attackPathId}>
             <div className="result-card-header">
-              <span className="result-card-title">{path.attackPathId} - {path.attackPathName}</span>
+              <span className="result-card-id-tag">{path.attackPathId}</span>
+              <span className="result-card-title">{path.attackPathName}</span>
               <div className="badge-row">
                 <span className="result-card-badge badge-feasibility">可行性: {path.attackFeasibility}</span>
                 <SeverityBadge value={path.impactLevel} labelPrefix="影响: " />
+                {path.securityRiskLevel && <span className={`result-card-badge badge-sl-${path.securityRiskLevel}`}>SL-{path.securityRiskLevel}</span>}
               </div>
             </div>
+            <div className="risk-score-grid">
+              <span>IL: {path.impactLevelScore || '-'} [{path.impactLevelLabel || path.impactLevel}]</span>
+              <span>AL: {path.attackFeasibilityLevel || '-'} [{path.attackFeasibilityLabel || path.attackFeasibility}]</span>
+              <span>SL: {path.treatmentDecisionLevel || path.securityRiskLevel || '-'} [{path.recommendedTreatmentLabel || path.recommendedTreatmentDecision || '-'}]</span>
+            </div>
+            {/* 5-dimension feasibility score grid */}
+            {path.attackFeasibilityDimensions && Object.keys(path.attackFeasibilityDimensions).length > 0 && (
+              <div className="feasibility-grid">
+                {Object.entries(path.attackFeasibilityDimensions).map(([dim, info]) => (
+                  <div className="feasibility-dim" key={dim} title={info.rationale || ''}>
+                    <span className="feasibility-dim-label">{dim}</span>
+                    <span className="feasibility-dim-score">{info.score}</span>
+                    <span className="feasibility-dim-desc">{info.label}</span>
+                  </div>
+                ))}
+                {path.attackFeasibilityTotal !== undefined && (
+                  <div className="feasibility-total">
+                    TOTAL = {path.attackFeasibilityTotal} → AL: {path.attackFeasibilityLabel || path.attackFeasibility}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Legacy single-score display */}
+            {!path.attackFeasibilityDimensions && (path.et !== undefined || path.attackFeasibilityScore !== undefined) && (
+              <div className="feasibility-grid feasibility-grid--inline">
+                {path.et !== undefined && <span className="feasibility-dim" title={path.etRationale || ''}>ET: {path.et}</span>}
+                {path.exp !== undefined && <span className="feasibility-dim" title={path.expRationale || ''}>EXP: {path.exp}</span>}
+                {path.kn !== undefined && <span className="feasibility-dim" title={path.knRationale || ''}>KN: {path.kn}</span>}
+                {path.wo !== undefined && <span className="feasibility-dim" title={path.woRationale || ''}>WO: {path.wo}</span>}
+                {path.eq !== undefined && <span className="feasibility-dim" title={path.eqRationale || ''}>EQ: {path.eq}</span>}
+                <span className="feasibility-total">Total: {path.attackFeasibilityScore || '-'}</span>
+              </div>
+            )}
+            {path.riskMeaning && <div className="result-card-meta"><strong>风险含义：</strong>{path.riskMeaning}</div>}
             <div className="result-card-meta"><strong>攻击入口：</strong>{path.entryPoint}</div>
             <div className="result-card-meta"><strong>关联威胁：</strong>{path.relatedThreats.join(', ') || '-'}</div>
+            {path.relatedDamageScenarioId && <div className="result-card-meta"><strong>关联损害场景：</strong><span className="id-reference">{path.relatedDamageScenarioId}</span></div>}
             <div className="attack-steps">
               {path.attackSteps.map((step, index) => (
                 <div className="attack-step" key={`${path.attackPathId}-${index}`}>
@@ -1200,6 +1282,7 @@ function AttackPathResults({ attackPaths, onExport, onCopy }: { attackPaths: Att
                 </div>
               ))}
             </div>
+            {path.consequence && <div className="result-card-meta"><strong>后果：</strong>{path.consequence}</div>}
             <div className="result-card-meta"><strong>所需能力：</strong>{path.requiredCapability}</div>
           </div>
         ))}
@@ -1221,13 +1304,44 @@ function RiskTreatmentResults({ riskTreatments, onExport, onCopy }: { riskTreatm
               <span className="result-card-title">{treatment.treatmentId} - {treatment.controlName}</span>
               <div className="badge-row">
                 <span className={`result-card-badge badge-decision-${treatment.treatmentDecision.toLowerCase()}`}>{treatment.treatmentDecision}</span>
+                {treatment.treatmentDecisionLabel && <span className="result-card-badge badge-control">{treatment.treatmentDecisionLabel}</span>}
+                {treatment.securityRiskLevel && <span className={`result-card-badge badge-sl-${treatment.securityRiskLevel}`}>SL-{treatment.securityRiskLevel}</span>}
                 <span className="result-card-badge badge-control">{treatment.controlType}</span>
               </div>
             </div>
             <div className="result-card-desc">{treatment.controlDescription}</div>
             <div className="result-card-meta"><strong>关联攻击路径：</strong>{treatment.relatedAttackPath}</div>
+            {treatment.relatedThreatId && <div className="result-card-meta"><strong>关联威胁：</strong><span className="id-reference">{treatment.relatedThreatId}</span></div>}
+            {treatment.treatmentDecisionRationale && <div className="result-card-meta"><strong>处置依据：</strong>{treatment.treatmentDecisionRationale}</div>}
             <div className="result-card-meta"><strong>实施优先级：</strong>{treatment.implementationPriority} | <strong>残余风险：</strong>{treatment.residualRisk}</div>
             <div className="result-card-meta"><strong>验证方法：</strong>{treatment.verificationMethod}</div>
+
+            {/* Cybersecurity Goal & Claim section */}
+            {treatment.cybersecurityGoalId && (
+              <div className="cybersecurity-section">
+                {treatment.cybersecurityGoalId !== '/' ? (
+                  <>
+                    <div className="cs-section-title">🔒 网络安全目标与声明</div>
+                    <div className="cs-goal">
+                      <span className="id-reference">{treatment.cybersecurityGoalId}</span>
+                      <span className="cs-text">{treatment.cybersecurityGoal || '-'}</span>
+                    </div>
+                    {treatment.cybersecurityRequirement && treatment.cybersecurityRequirement !== '/' && (
+                      <div className="cs-requirement">
+                        <strong>网络安全需求：</strong>
+                        <span className="cs-text">{treatment.cybersecurityRequirement}</span>
+                      </div>
+                    )}
+                    <div className="cs-claim">
+                      <span className="id-reference">{treatment.cybersecurityClaimId || '-'}</span>
+                      <span className="cs-text">{treatment.cybersecurityClaim || '-'}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="cs-section-title cs-section-title--retain">🔒 保留风险 — 不设网络安全目标/声明</div>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>

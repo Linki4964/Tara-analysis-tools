@@ -51,3 +51,12 @@ class StructureDocxRequest(BaseModel):
     extractedHtml: Optional[str] = None
     filename: Optional[str] = None
     runId: Optional[str] = None
+
+
+class ExportExcelRequest(BaseModel):
+    projectName: Optional[str] = None
+    assets: list[dict[str, Any]] = Field(default_factory=list)
+    threats: list[dict[str, Any]] = Field(default_factory=list)
+    attackPaths: list[dict[str, Any]] = Field(default_factory=list)
+    riskTreatments: list[dict[str, Any]] = Field(default_factory=list)
+    itemAbbreviation: Optional[str] = "VIU"
