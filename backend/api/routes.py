@@ -1,10 +1,11 @@
 from fastapi import APIRouter, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from backend.schemas import (
     ApiConfigRequest,
     AssetRequest,
     AttackPathRequest,
+    ExportExcelRequest,
     ItemDefinitionRequest,
     RiskTreatmentRequest,
     StructureDocxRequest,
@@ -24,6 +25,7 @@ from tara_core.config import (
 )
 from tara_core.llm import LLMError
 from tara_core import services
+from tara_core.export_excel import export_to_excel
 from backend.services.run_store import (
     complete_run,
     create_run,
@@ -271,3 +273,29 @@ async def generate_risk_treatment(request: RiskTreatmentRequest):
 @router.post("/structure-docx")
 def structure_docx(request: StructureDocxRequest):
     return run_service(services.structure_docx, to_payload(request))
+
+
+@router.post("/export-excel")
+def export_excel(request: ExportExcelRequest):
+    """Export TARA analysis results as an Excel file based on the template."""
+    try:
+        data = to_payload(request)
+        excel_bytes = export_to_excel(
+            project_name=data.get("projectName", ""),
+            assets=data.get("assets") or [],
+            threats=data.get("threats") or [],
+            attack_paths=data.get("attackPaths") or [],
+            risk_treatments=data.get("riskTreatments") or [],
+            item_abbreviation=data.get("itemAbbreviation", "VIU"),
+        )
+        filename = (data.get("projectName") or "tara").replace("/", "_").replace("\\", "_")
+        return Response(
+            content=excel_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'},
+        )
+    except Exception as error:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "Excel export failed.", "message": str(error)},
+        )

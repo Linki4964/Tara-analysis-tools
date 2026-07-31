@@ -6,6 +6,7 @@ from .prompts.item_definition import build_item_definition_prompts
 from .prompts.risk_treatment import build_risk_treatment_prompt
 from .prompts.structure_docx import build_structure_docx_prompts
 from .prompts.threats import build_threat_prompt
+from .risk_scoring import enrich_treatment, score_attack_path, score_damage_scenario
 
 
 def bad_request(error: str, message: str):
@@ -81,6 +82,7 @@ def generate_assets(payload):
     result_text = call_llm(
         "你是一名汽车网络安全专家，专门从事TARA分析中的资产识别工作。你严格按照ISO/SAE 21434标准进行分析，输出必须是合法的JSON格式。",
         prompt,
+        max_tokens=16384,
     )
     result = parse_json_from_llm(result_text)
     assets = result.get("assets")
@@ -89,6 +91,7 @@ def generate_assets(payload):
 
     result["assets"] = [
         {
+            "assetId": asset.get("assetId") or f"AS-{index + 1:03d}",
             "assetName": asset.get("assetName") or f"Asset {index + 1}",
             "assetType": asset.get("assetType") or "Unknown",
             "description": asset.get("description") or "",
@@ -100,12 +103,23 @@ def generate_assets(payload):
                 "authenticity": bool((asset.get("securityProperties") or {}).get("authenticity", False)),
             },
             "damageScenarios": [
-                {
-                    "scenarioName": scenario.get("scenarioName") or f"损害场景 {scenario_index + 1}",
-                    "description": scenario.get("description") or "",
-                    "severity": scenario.get("severity") or "Medium",
-                    "affectedProperty": scenario.get("affectedProperty") or "Unknown",
-                }
+                score_damage_scenario(
+                    {
+                        "scenarioId": scenario.get("scenarioId") or f"CsDS_AS_UNK_{scenario_index + 1:03d}",
+                        "scenarioName": scenario.get("scenarioName") or f"损害场景 {scenario_index + 1}",
+                        "description": scenario.get("description") or "",
+                        "severity": scenario.get("severity") or "Medium",
+                        "affectedProperty": scenario.get("affectedProperty") or "Unknown",
+                        "safety": scenario.get("safety"),
+                        "safetyRationale": scenario.get("safetyRationale", ""),
+                        "financial": scenario.get("financial"),
+                        "financialRationale": scenario.get("financialRationale", ""),
+                        "operational": scenario.get("operational"),
+                        "operationalRationale": scenario.get("operationalRationale", ""),
+                        "privacy": scenario.get("privacy"),
+                        "privacyRationale": scenario.get("privacyRationale", ""),
+                    }
+                )
                 for scenario_index, scenario in enumerate(asset.get("damageScenarios") or [])
             ],
         }
@@ -124,7 +138,7 @@ def analyze_threats(payload):
         "你是一名汽车网络安全威胁分析专家，严格遵循ISO/SAE 21434标准进行TARA威胁分析。输出必须是合法的JSON格式。",
         prompt,
         0.3,
-        8192,
+        16384,
     )
     result = parse_json_from_llm(result_text)
     threats = result.get("threats")
@@ -133,12 +147,13 @@ def analyze_threats(payload):
 
     result["threats"] = [
         {
-            "threatId": threat.get("threatId") or f"T-{index + 1:03d}",
+            "threatId": threat.get("threatId") or f"CsTS_UNK_{index + 1:03d}",
             "threatName": threat.get("threatName") or f"威胁 {index + 1}",
             "targetAsset": threat.get("targetAsset") or "",
+            "targetAssetName": threat.get("targetAssetName") or "",
             "strideCategory": threat.get("strideCategory") or "Unknown",
             "description": threat.get("description") or "",
-            "damageScenario": threat.get("damageScenario") or "",
+            "relatedDamageScenarioId": threat.get("relatedDamageScenarioId") or "",
             "affectedSecurityProperty": threat.get("affectedSecurityProperty") or "",
             "threatSeverity": threat.get("threatSeverity") or "Medium",
         }
@@ -157,26 +172,53 @@ def generate_attack_paths(payload):
         "你是一名汽车网络安全攻击路径分析专家。你严格遵循ISO/SAE 21434标准，输出必须是合法的JSON格式。",
         prompt,
         0.3,
-        8192,
+        16384,
     )
     result = parse_json_from_llm(result_text)
     attack_paths = result.get("attackPaths")
     if not isinstance(attack_paths, list):
         raise ValueError("Response missing attackPaths array")
 
-    result["attackPaths"] = [
-        {
-            "attackPathId": path.get("attackPathId") or f"AP-{index + 1:03d}",
-            "attackPathName": path.get("attackPathName") or f"攻击路径 {index + 1}",
-            "relatedThreats": path.get("relatedThreats") or [],
-            "entryPoint": path.get("entryPoint") or "",
-            "attackSteps": path.get("attackSteps") or [],
-            "requiredCapability": path.get("requiredCapability") or "",
-            "attackFeasibility": path.get("attackFeasibility") or "Medium",
-            "impactLevel": path.get("impactLevel") or "Medium",
-        }
+    path_by_threat = {}
+    for threat in threats:
+        tid = threat.get("threatId", "")
+        if tid:
+            path_by_threat[tid] = threat
+
+    normalized_paths = [
+        score_attack_path(
+            {
+                "attackPathId": path.get("attackPathId") or f"AP-{index + 1:03d}",
+                "attackPathName": path.get("attackPathName") or f"攻击路径 {index + 1}",
+                "relatedThreats": path.get("relatedThreats") or [],
+                "relatedDamageScenarioId": path.get("relatedDamageScenarioId") or "",
+                "entryPoint": path.get("entryPoint") or "",
+                "attackSteps": path.get("attackSteps") or [],
+                "consequence": path.get("consequence") or "",
+                "requiredCapability": path.get("requiredCapability") or "",
+                # 5-dimension feasibility scoring
+                "et": path.get("et"),
+                "etRationale": path.get("etRationale", ""),
+                "exp": path.get("exp"),
+                "expRationale": path.get("expRationale", ""),
+                "kn": path.get("kn"),
+                "knRationale": path.get("knRationale", ""),
+                "wo": path.get("wo"),
+                "woRationale": path.get("woRationale", ""),
+                "eq": path.get("eq"),
+                "eqRationale": path.get("eqRationale", ""),
+                # Legacy single-score fallback (still accepted)
+                "attackFeasibility": path.get("attackFeasibility"),
+                "attackFeasibilityScore": path.get("attackFeasibilityScore"),
+                "attackFeasibilityLevel": path.get("attackFeasibilityLevel"),
+                # Impact level
+                "impactLevel": path.get("impactLevel") or "Medium",
+            },
+            _related_threats(path.get("relatedThreats") or [], threats),
+        )
         for index, path in enumerate(attack_paths)
     ]
+    result["attackPaths"] = normalized_paths
     return result
 
 
@@ -195,28 +237,49 @@ def generate_risk_treatment(payload):
         "你是一名汽车网络安全风险处置专家。你严格遵循ISO/SAE 21434标准，输出必须是合法的JSON格式。",
         prompt,
         0.3,
-        8192,
+        16384,
     )
     result = parse_json_from_llm(result_text)
     treatments = result.get("riskTreatments")
     if not isinstance(treatments, list):
         raise ValueError("Response missing riskTreatments array")
 
+    path_by_id = {path.get("attackPathId"): path for path in attack_paths}
     result["riskTreatments"] = [
-        {
-            "treatmentId": treatment.get("treatmentId") or f"RT-{index + 1:03d}",
-            "relatedAttackPath": treatment.get("relatedAttackPath") or "",
-            "treatmentDecision": treatment.get("treatmentDecision") or "Mitigate",
-            "controlName": treatment.get("controlName") or f"控制措施 {index + 1}",
-            "controlDescription": treatment.get("controlDescription") or "",
-            "controlType": treatment.get("controlType") or "Technical",
-            "implementationPriority": treatment.get("implementationPriority") or "Medium",
-            "residualRisk": treatment.get("residualRisk") or "Low",
-            "verificationMethod": treatment.get("verificationMethod") or "",
-        }
+        enrich_treatment(
+            {
+                "treatmentId": treatment.get("treatmentId") or f"RT-{index + 1:03d}",
+                "relatedAttackPath": treatment.get("relatedAttackPath") or "",
+                "relatedThreatId": treatment.get("relatedThreatId") or "",
+                "relatedDamageScenarioId": treatment.get("relatedDamageScenarioId") or "",
+                "treatmentDecision": treatment.get("treatmentDecision") or "Mitigate",
+                "treatmentDecisionLabel": treatment.get("treatmentDecisionLabel") or "",
+                "controlName": treatment.get("controlName") or f"控制措施 {index + 1}",
+                "controlDescription": treatment.get("controlDescription") or "",
+                "controlType": treatment.get("controlType") or "Technical",
+                "implementationPriority": treatment.get("implementationPriority") or "Medium",
+                "residualRisk": treatment.get("residualRisk") or "Low",
+                "verificationMethod": treatment.get("verificationMethod") or "",
+                # Cybersecurity Goal / Claim / Requirement
+                "cybersecurityGoalId": treatment.get("cybersecurityGoalId") or "",
+                "cybersecurityGoal": treatment.get("cybersecurityGoal") or "",
+                "cybersecurityRequirement": treatment.get("cybersecurityRequirement") or "",
+                "cybersecurityClaimId": treatment.get("cybersecurityClaimId") or "",
+                "cybersecurityClaim": treatment.get("cybersecurityClaim") or "",
+            },
+            path_by_id.get(treatment.get("relatedAttackPath") or ""),
+        )
         for index, treatment in enumerate(treatments)
     ]
     return result
+
+
+def _related_threats(related_ids, threats):
+    if not related_ids:
+        return threats
+    wanted = {str(item) for item in related_ids}
+    matched = [threat for threat in threats if str(threat.get("threatId")) in wanted]
+    return matched or threats
 
 
 def structure_docx(payload):

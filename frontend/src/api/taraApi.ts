@@ -43,6 +43,37 @@ export const taraApi = {
     runId?: string;
   }) => post<{ projectName: string; riskTreatments: RiskTreatment[] }>('/api/generate-risk-treatment', payload),
 
+  // ---- Excel Export (binary download) ----
+  exportExcel: async (payload: {
+    projectName?: string;
+    assets: Asset[];
+    threats: Threat[];
+    attackPaths: AttackPath[];
+    riskTreatments: RiskTreatment[];
+  }) => {
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+    const response = await fetch(`${API_BASE_URL}/api/export-excel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: 'Export failed' }));
+      throw new Error(err.message || err.detail || 'Export failed');
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match?.[1] || 'tara_export.xlsx';
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+    return { success: true, filename };
+  },
+
   // ---- Persistence / History ----
   createRun: (payload: { projectName?: string; documentFilename?: string }) =>
     post<{ success: boolean; runId: string }>('/api/runs', payload),
