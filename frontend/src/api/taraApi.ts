@@ -81,4 +81,12 @@ export const taraApi = {
   listRuns: () => get<{ success: boolean; runs: RunSummary[] }>('/api/runs'),
   getRun: (runId: string) => get<{ success: boolean; run: RunDetail }>(`/api/runs/${encodeURIComponent(runId)}`),
   deleteRun: (runId: string) => del<{ success: boolean }>(`/api/runs/${encodeURIComponent(runId)}`),
+
+  // ---- Project-level operations ----
+  renameProject: (oldName: string, newName: string) =>
+    post<{ success: boolean; updated: number }>('/api/projects/rename', { oldName, newName }),
+  deleteProject: (projectName: string) =>
+    del<{ success: boolean; deleted: number }>(`/api/projects/${encodeURIComponent(projectName)}`),
+  updateRun: (runId: string, payload: { documentFilename?: string | null }) =>
+    patch<{ success: boolean }>(`/api/runs/${encodeURIComponent(runId)}`, payload),
 };

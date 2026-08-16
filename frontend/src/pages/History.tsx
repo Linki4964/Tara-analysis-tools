@@ -75,7 +75,7 @@ export default function History() {
   }
 
   function handleLoad(runId: string) {
-    navigate('/', { state: { loadRunId: runId } });
+    navigate('/workspace', { state: { loadRunId: runId } });
   }
 
   function formatDate(iso: string) {
@@ -108,9 +108,9 @@ export default function History() {
   return (
     <div className="history-page">
       <div className="history-header">
-        <button className="btn-back" type="button" onClick={() => navigate('/')} title="返回首页">
+        <button className="btn-back" type="button" onClick={() => navigate('/projects')} title="返回项目管理">
           <ArrowLeft size={18} />
-          <span>返回</span>
+          <span>项目管理</span>
         </button>
         <div className="history-header-right">
           <h2>历史记录</h2>

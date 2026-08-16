@@ -147,3 +147,54 @@ async def delete_run(run_id: str) -> bool:
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM runs WHERE id = $1", run_id)
         return result != "DELETE 0"
+
+
+# ---------------------------------------------------------------------------
+# Project-level helpers (a project = all runs sharing a project_name)
+# ---------------------------------------------------------------------------
+
+
+async def rename_project(old_name: str, new_name: str) -> int:
+    """Rename every run belonging to a project.  Returns the number of rows updated."""
+    pool = await get_pool()
+    if pool is None:
+        return 0
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE runs SET project_name = $1, updated_at = now() WHERE project_name = $2",
+            new_name,
+            old_name,
+        )
+        return _row_count(result)
+
+
+async def delete_project(project_name: str) -> int:
+    """Delete every run of a project (cascades to step_results).  Returns the number deleted."""
+    pool = await get_pool()
+    if pool is None:
+        return 0
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM runs WHERE project_name = $1", project_name)
+        return _row_count(result)
+
+
+async def update_run_metadata(run_id: str, document_filename: str | None = None) -> bool:
+    """Update metadata of a single run (e.g. its document filename)."""
+    pool = await get_pool()
+    if pool is None:
+        return False
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE runs SET document_filename = $2, updated_at = now() WHERE id = $1",
+            run_id,
+            document_filename or "",
+        )
+        return result != "UPDATE 0"
+
+
+def _row_count(result: str) -> int:
+    """Parse the 'UPDATE N' / 'DELETE N' tag returned by asyncpg."""
+    try:
+        return int(result.split()[-1])
+    except (IndexError, ValueError):
+        return 0

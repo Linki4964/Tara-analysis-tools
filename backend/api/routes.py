@@ -29,10 +29,13 @@ from tara_core.export_excel import export_to_excel
 from backend.services.run_store import (
     complete_run,
     create_run,
+    delete_project,
     delete_run,
     get_run,
     list_runs,
+    rename_project,
     save_step_result,
+    update_run_metadata,
 )
 
 
@@ -205,6 +208,40 @@ async def create_run_route(payload: dict):
 async def complete_run_route(run_id: str):
     """Mark a run as completed."""
     await complete_run(run_id)
+    return {"success": True}
+
+
+@router.post("/projects/rename")
+async def rename_project_route(payload: dict):
+    """Rename a project (every run sharing the old project name)."""
+    old_name = (payload or {}).get("oldName", "")
+    new_name = (payload or {}).get("newName", "")
+    if not old_name or not new_name:
+        return JSONResponse(status_code=400, content={"success": False, "message": "oldName and newName are required"})
+    if old_name == new_name:
+        return {"success": True, "updated": 0}
+    updated = await rename_project(old_name, new_name)
+    if updated == 0:
+        return JSONResponse(status_code=404, content={"success": False, "message": "Project not found"})
+    return {"success": True, "updated": updated}
+
+
+@router.delete("/projects/{project_name}")
+async def delete_project_route(project_name: str):
+    """Delete a project and all its runs / step results."""
+    deleted = await delete_project(project_name)
+    if deleted == 0:
+        return JSONResponse(status_code=404, content={"success": False, "message": "Project not found"})
+    return {"success": True, "deleted": deleted}
+
+
+@router.patch("/runs/{run_id}")
+async def update_run_route(run_id: str, payload: dict):
+    """Update metadata of a single run (e.g. document filename)."""
+    document_filename = (payload or {}).get("documentFilename")
+    ok = await update_run_metadata(run_id, document_filename)
+    if not ok:
+        return JSONResponse(status_code=404, content={"success": False, "message": "Run not found"})
     return {"success": True}
 
 
