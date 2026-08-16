@@ -10,8 +10,6 @@ import {
   ChevronRight,
   Copy,
   Download,
-  Eye,
-  EyeOff,
   FileJson,
   FileSearch,
   FolderOpen,
@@ -22,45 +20,26 @@ import {
   Shield,
   ShieldCheck,
   Target,
-  Trash2,
   Upload,
+  Workflow,
   X
 } from 'lucide-react';
 import { taraApi } from './api/taraApi';
+import { DiagramEmbed } from './pages/Diagram';
 import type { ApiProvider, Asset, AttackPath, Health, ItemDefinition, RiskTreatment, Threat, UploadedDocument } from './types/tara';
 import './styles.css';
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 0 | 1 | 2 | 3 | 4 | 5;
 type JsonKey = 'assets' | 'threats' | 'attackPaths' | 'riskTreatments';
 
 const steps: Array<{ id: Step; label: string }> = [
+  { id: 0, label: '结构图' },
   { id: 1, label: '相关项定义' },
   { id: 2, label: '资产识别' },
   { id: 3, label: '威胁分析' },
   { id: 4, label: '攻击路径' },
   { id: 5, label: '风险处置' }
 ];
-
-function detectProvider(key: string): { provider: ApiProvider; label: string } {
-  const trimmed = key.trim();
-  if (!trimmed) {
-    return { provider: 'local', label: '未输入 Key — 将使用本地模型' };
-  }
-  if (trimmed.startsWith('sk-ant-')) {
-    return { provider: 'anthropic', label: '已识别: Anthropic (Claude)' };
-  }
-  if (trimmed.startsWith('sk-')) {
-    return { provider: 'deepseek', label: '已识别: OpenAI 兼容 (DeepSeek 等)' };
-  }
-  return { provider: 'deepseek', label: '已识别: OpenAI 兼容格式' };
-}
-
-const PROVIDER_LABELS: Record<ApiProvider, string> = {
-  auto: '自动检测',
-  anthropic: 'Anthropic (Claude)',
-  deepseek: 'DeepSeek',
-  local: '本地模型 (Ollama/vLLM)',
-};
 
 const PROVIDER_SHORT: Record<ApiProvider, string> = {
   auto: '自动',
@@ -74,7 +53,8 @@ export default function App() {
   const location = useLocation();
 
   const [health, setHealth] = useState<Health | null>(null);
-  const [currentStep, setCurrentStep] = useState<Step>(1);
+  const [currentStep, setCurrentStep] = useState<Step>(0);
+  const [diagramNodeCount, setDiagramNodeCount] = useState(0);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -95,17 +75,6 @@ export default function App() {
   const [threats, setThreats] = useState<Threat[]>([]);
   const [attackPaths, setAttackPaths] = useState<AttackPath[]>([]);
   const [riskTreatments, setRiskTreatments] = useState<RiskTreatment[]>([]);
-
-  const [showSettings, setShowSettings] = useState(false);
-  const [settingsProvider, setSettingsProvider] = useState<ApiProvider>('auto');
-  const [settingsApiKey, setSettingsApiKey] = useState('');
-  const [settingsModel, setSettingsModel] = useState('');
-  const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [settingsSaving, setSettingsSaving] = useState(false);
-
-  const detected = detectProvider(settingsApiKey);
-  const effectiveProvider: ApiProvider = settingsProvider === 'auto' ? detected.provider : settingsProvider;
 
   const [showKeySwitcher, setShowKeySwitcher] = useState(false);
   const [savedConfigs, setSavedConfigs] = useState<import('./types/tara').SavedConfig[]>([]);
@@ -161,12 +130,14 @@ export default function App() {
       else if (completedSteps.includes(4)) setCurrentStep(4);
       else if (completedSteps.includes(3)) setCurrentStep(3);
       else if (completedSteps.includes(2)) setCurrentStep(2);
-      else setCurrentStep(1);
+      else if (completedSteps.includes(1)) setCurrentStep(1);
+      else setCurrentStep(0);
       setToast('已加载历史记录');
     }).catch(() => {});
   }, [location.state]);
 
   const canOpenStep = (step: Step) => {
+    if (step === 0) return true;
     if (step === 1) return true;
     if (step === 2) return Boolean(itemDefinition);
     if (step === 3) return assets.length > 0;
@@ -176,6 +147,7 @@ export default function App() {
   };
 
   const stepDone = (step: Step) => {
+    if (step === 0) return diagramNodeCount > 0;
     if (step === 1) return Boolean(itemDefinition);
     if (step === 2) return assets.length > 0;
     if (step === 3) return threats.length > 0;
@@ -183,56 +155,6 @@ export default function App() {
     if (step === 5) return riskTreatments.length > 0;
     return false;
   };
-
-  function openSettings() {
-    taraApi.getConfig().then((res) => {
-      const cfg = res.config;
-      if (cfg && cfg.provider) {
-        setSettingsProvider(cfg.provider);
-        setSettingsApiKey(cfg.api_key || '');
-        setSettingsModel(cfg.model || '');
-        setSettingsBaseUrl(cfg.base_url || '');
-      }
-    }).catch(() => {});
-    setShowSettings(true);
-  }
-
-  async function saveSettings() {
-    setSettingsSaving(true);
-    setError('');
-    try {
-      const res = await taraApi.setConfig({
-        provider: effectiveProvider,
-        api_key: settingsApiKey,
-        model: settingsModel || undefined,
-        base_url: settingsBaseUrl || undefined,
-      });
-      setHealth({ status: 'ok', provider: res.provider, model: res.model, hasApiKey: res.hasApiKey });
-      setShowSettings(false);
-      setToast('API 配置已保存');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '保存配置失败');
-    } finally {
-      setSettingsSaving(false);
-    }
-  }
-
-  async function clearSettings() {
-    setSettingsSaving(true);
-    setError('');
-    try {
-      const res = await taraApi.deleteConfig();
-      setHealth({ status: 'ok', provider: res.provider, model: res.model, hasApiKey: res.hasApiKey });
-      setSettingsApiKey('');
-      setSettingsModel('');
-      setSettingsBaseUrl('');
-      setToast('API 配置已清除，恢复使用 .env 设置');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '清除配置失败');
-    } finally {
-      setSettingsSaving(false);
-    }
-  }
 
   function loadSavedConfigs() {
     taraApi.listConfigs().then((res) => setSavedConfigs(res.saved || [])).catch(() => {});
@@ -560,14 +482,16 @@ export default function App() {
 
   return (
     <div className="template-shell">
-      <header className="header">
+      {currentStep !== 0 && (
+        <>
+          <header className="header">
         <div className="header-left">
           <Shield size={34} className="logo-icon" />
           <h1 className="title">TARA 分析与风险处置工具</h1>
           <span className="badge">ISO/SAE 21434</span>
-          <button className="btn-back" type="button" onClick={() => navigate('/')} title="返回首页">
+          <button className="btn-back" type="button" onClick={() => navigate('/projects')} title="返回项目管理">
             <ArrowLeft size={18} />
-            <span>返回</span>
+            <span>项目管理</span>
           </button>
         </div>
         <div className="header-center">
@@ -657,7 +581,7 @@ export default function App() {
             )}
           </div>
 
-          <button className="btn-settings" type="button" onClick={openSettings} title="API 设置">
+          <button className="btn-settings" type="button" onClick={() => navigate('/settings')} title="API 设置">
             <Settings size={18} />
           </button>
         </div>
@@ -672,13 +596,17 @@ export default function App() {
               onClick={() => setCurrentStep(step.id)}
               type="button"
             >
-              <span className="step-number">{stepDone(step.id) ? <Check size={17} /> : step.id}</span>
+              <span className="step-number">
+                {stepDone(step.id) ? <Check size={17} /> : step.id === 0 ? <Workflow size={17} /> : step.id}
+              </span>
               <span className="step-label">{step.label}</span>
             </button>
             {index < steps.length - 1 && <ChevronRight className="step-arrow" size={18} />}
           </div>
         ))}
       </nav>
+        </>
+      )}
 
       {error && (
         <div className="inline-alert">
@@ -691,6 +619,18 @@ export default function App() {
       )}
 
       <main className="main-container">
+        {currentStep === 0 && (
+          <div className="diagram-step-host">
+            <DiagramEmbed
+              runId={currentRunId}
+              notify={setToast}
+              onStats={setDiagramNodeCount}
+              onBack={() => navigate('/projects')}
+              onNext={() => setCurrentStep(1)}
+            />
+          </div>
+        )}
+
         {currentStep === 1 && (
           <StepPanel
             leftTitle="相关项定义"
@@ -869,133 +809,6 @@ export default function App() {
               </button>
               <button className="btn-export btn-export--secondary" type="button" onClick={() => setShowExportModal(false)}>
                 关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showSettings && (
-        <div className="modal">
-          <button className="modal-overlay" type="button" onClick={() => setShowSettings(false)} aria-label="关闭" />
-          <div className="modal-content modal-settings">
-            <div className="modal-header">
-              <h3><Settings size={20} /> API 设置</h3>
-              <button className="modal-close" type="button" onClick={() => setShowSettings(false)} aria-label="关闭">
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="settings-body">
-              <Field label="模型提供商">
-                <div className="provider-auto-detect">
-                  <div className={`auto-detect-result ${settingsApiKey.trim() ? 'auto-detect-result--found' : ''}`}>
-                    <span className={`auto-detect-dot ${settingsApiKey.trim() ? 'auto-detect-dot--active' : ''}`} />
-                    <span className="auto-detect-label">
-                      {settingsProvider === 'auto' ? detected.label : `手动选择: ${PROVIDER_LABELS[settingsProvider]}`}
-                    </span>
-                  </div>
-                  <div className="provider-tabs provider-tabs--compact">
-                    <button
-                      type="button"
-                      className={`provider-tab provider-tab--small ${settingsProvider === 'auto' ? 'provider-tab--active' : ''}`}
-                      onClick={() => setSettingsProvider('auto')}
-                    >
-                      自动
-                    </button>
-                    {(['anthropic', 'deepseek', 'local'] as ApiProvider[]).map((value) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`provider-tab provider-tab--small ${settingsProvider === value ? 'provider-tab--active' : ''}`}
-                        onClick={() => setSettingsProvider(value)}
-                      >
-                        {PROVIDER_SHORT[value]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </Field>
-
-              <Field label="API Key">
-                <div className="input-with-icon">
-                  <input
-                    className="form-input"
-                    type={showApiKey ? 'text' : 'password'}
-                    value={settingsApiKey}
-                    onChange={(event) => setSettingsApiKey(event.target.value)}
-                    placeholder={
-                      effectiveProvider === 'local'
-                        ? '本地模型可留空 (默认 ollama)'
-                        : '输入你的 API Key'
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="input-icon-btn"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    aria-label={showApiKey ? '隐藏' : '显示'}
-                  >
-                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </Field>
-
-              <Field label="模型名称">
-                <input
-                  className="form-input"
-                  value={settingsModel}
-                  onChange={(event) => setSettingsModel(event.target.value)}
-                  placeholder={
-                    effectiveProvider === 'anthropic'
-                      ? 'claude-sonnet-4-20250514'
-                      : effectiveProvider === 'deepseek'
-                        ? 'deepseek-chat'
-                        : 'llama3'
-                  }
-                />
-              </Field>
-
-              {effectiveProvider !== 'anthropic' && (
-                <Field label="Base URL">
-                  <input
-                    className="form-input"
-                    value={settingsBaseUrl}
-                    onChange={(event) => setSettingsBaseUrl(event.target.value)}
-                    placeholder={
-                      effectiveProvider === 'deepseek'
-                        ? 'https://api.deepseek.com'
-                        : 'http://localhost:11434/v1'
-                    }
-                  />
-                </Field>
-              )}
-
-              {settingsProvider === 'local' && (
-                <div className="settings-hint">
-                  <Shield size={14} />
-                  <span>本地模型使用 OpenAI 兼容 API（支持 Ollama、LM Studio、vLLM 等）。</span>
-                </div>
-              )}
-            </div>
-
-            <div className="modal-actions">
-              <button
-                className="btn-export"
-                type="button"
-                onClick={saveSettings}
-                disabled={settingsSaving || (!settingsApiKey && settingsProvider !== 'local')}
-              >
-                {settingsSaving ? <Loader2 className="spinner-icon" size={16} /> : <Check size={16} />}
-                保存配置
-              </button>
-              <button
-                className="btn-export btn-export--secondary"
-                type="button"
-                onClick={clearSettings}
-                disabled={settingsSaving}
-              >
-                <Trash2 size={16} /> 清除配置
               </button>
             </div>
           </div>
