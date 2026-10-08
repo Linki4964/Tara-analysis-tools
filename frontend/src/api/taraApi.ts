@@ -1,5 +1,17 @@
 import { del, get, patch, post, upload } from './client';
 import type { ApiConfig, Asset, AttackPath, ConfigsList, Health, ItemDefinition, RiskTreatment, RunDetail, RunSummary, SavedConfig, Threat, UploadedDocument } from '../types/tara';
+import type { ArchModel, DiagramCounts, ModelChanges } from '../diagram/types';
+
+export interface GenerateDiagramResult {
+  success: boolean;
+  plan?: string;
+  summary?: string;
+  model: ArchModel;
+  counts: DiagramCounts;
+  changes?: ModelChanges;
+  warnings?: string[];
+  description?: string;
+}
 
 export const taraApi = {
   health: () => get<Health>('/api/health'),
@@ -28,6 +40,14 @@ export const taraApi = {
       '/api/extract-item-definition',
       payload
     ),
+  generateDiagram: (payload: {
+    projectName?: string;
+    description: string;
+    currentModel?: ArchModel | null;
+    mode?: 'create' | 'modify';
+    runId?: string;
+  }) =>
+    post<GenerateDiagramResult>('/api/generate-diagram', payload),
   generateAssets: (payload: { projectName: string; systemDescription: string; optionalInfo?: string; runId?: string }) =>
     post<{ projectName: string; assets: Asset[] }>('/api/generate-assets', payload),
   analyzeThreats: (payload: { projectName: string; systemDescription: string; assets: Asset[]; runId?: string }) =>

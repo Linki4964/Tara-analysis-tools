@@ -32,6 +32,12 @@ import './styles.css';
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
 type JsonKey = 'assets' | 'threats' | 'attackPaths' | 'riskTreatments';
 
+/** Clamp an arbitrary navigation hint (e.g. `startAt`) into a valid Step. */
+function clampStep(value: number | undefined): Step {
+  const n = Math.floor(Number.isFinite(value) ? (value as number) : 0);
+  return Math.max(0, Math.min(5, n)) as Step;
+}
+
 const steps: Array<{ id: Step; label: string }> = [
   { id: 0, label: '结构图' },
   { id: 1, label: '相关项定义' },
@@ -60,6 +66,12 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [showExportModal, setShowExportModal] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  // True while an in-flight loadRunId navigation is fetching the run — gates the
+  // Step-0 board mount so it never reads/writes the wrong `tara-arch:pending` key.
+  const [resolvingRun, setResolvingRun] = useState<boolean>(() => {
+    const ls = location.state as { loadRunId?: string } | null;
+    return Boolean(ls?.loadRunId);
+  });
 
   const [projectName, setProjectName] = useState('');
   const [document, setDocument] = useState<UploadedDocument | null>(null);
@@ -96,14 +108,20 @@ export default function App() {
 
   // Load a run from history when navigated with loadRunId
   useEffect(() => {
-    const state = location.state as { loadRunId?: string } | null;
+    const state = location.state as { loadRunId?: string; startAt?: number } | null;
     if (!state?.loadRunId) return;
     const runId = state.loadRunId;
+    const startAt = clampStep(state.startAt);
     // Clear the location state so it doesn't re-trigger on re-renders
     window.history.replaceState({}, window.document.title);
+    setResolvingRun(true);
     taraApi.getRun(runId).then((res) => {
       const run = res.run;
-      if (!run) return;
+      if (!run) {
+        // Run not found: still let the user continue from the requested step.
+        setCurrentStep(startAt);
+        return;
+      }
       setCurrentRunId(run.id);
       if (run.project_name) setProjectName(run.project_name);
       for (const step of run.steps) {
@@ -124,16 +142,19 @@ export default function App() {
         if (step.step_number === 4 && data.attackPaths) setAttackPaths(data.attackPaths as AttackPath[]);
         if (step.step_number === 5 && data.riskTreatments) setRiskTreatments(data.riskTreatments as RiskTreatment[]);
       }
-      // Jump to the deepest completed step
-      const completedSteps = run.steps.map((s) => s.step_number);
-      if (completedSteps.includes(5)) setCurrentStep(5);
-      else if (completedSteps.includes(4)) setCurrentStep(4);
-      else if (completedSteps.includes(3)) setCurrentStep(3);
-      else if (completedSteps.includes(2)) setCurrentStep(2);
-      else if (completedSteps.includes(1)) setCurrentStep(1);
-      else setCurrentStep(0);
-      setToast('已加载历史记录');
-    }).catch(() => {});
+      // Jump to the deepest completed step; otherwise honour startAt (e.g. enter at step 1).
+      let deepest = 0;
+      for (const s of run.steps) {
+        if (s.step_number >= 1 && s.step_number <= 5 && s.step_number > deepest) deepest = s.step_number;
+      }
+      setCurrentStep((deepest > 0 ? deepest : startAt) as Step);
+      setToast(deepest > 0 ? '已加载历史记录' : startAt > 0 ? '已进入 TARA 向导，请继续第 1 步' : '已加载历史记录');
+    }).catch(() => {
+      // Backend unavailable / run missing: still allow continuing from the requested step.
+      setCurrentStep(startAt);
+    }).finally(() => {
+      setResolvingRun(false);
+    });
   }, [location.state]);
 
   const canOpenStep = (step: Step) => {
@@ -620,15 +641,22 @@ export default function App() {
 
       <main className="main-container">
         {currentStep === 0 && (
-          <div className="diagram-step-host">
-            <DiagramEmbed
-              runId={currentRunId}
-              notify={setToast}
-              onStats={setDiagramNodeCount}
-              onBack={() => navigate('/projects')}
-              onNext={() => setCurrentStep(1)}
-            />
-          </div>
+          currentRunId === null && resolvingRun ? (
+            <div className="loading-area">
+              <Loader2 className="spinner-icon" size={34} />
+              <p className="loading-text">正在载入分析进度…</p>
+            </div>
+          ) : (
+            <div className="diagram-step-host">
+              <DiagramEmbed
+                runId={currentRunId}
+                notify={setToast}
+                onStats={setDiagramNodeCount}
+                onBack={() => navigate('/projects')}
+                onNext={() => setCurrentStep(1)}
+              />
+            </div>
+          )
         )}
 
         {currentStep === 1 && (

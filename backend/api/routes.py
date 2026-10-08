@@ -5,6 +5,7 @@ from backend.schemas import (
     ApiConfigRequest,
     AssetRequest,
     AttackPathRequest,
+    DiagramRequest,
     ExportExcelRequest,
     ItemDefinitionRequest,
     RiskTreatmentRequest,
@@ -310,6 +311,17 @@ async def generate_risk_treatment(request: RiskTreatmentRequest):
 @router.post("/structure-docx")
 def structure_docx(request: StructureDocxRequest):
     return run_service(services.structure_docx, to_payload(request))
+
+
+@router.post("/generate-diagram")
+async def generate_diagram_route(request: DiagramRequest):
+    """AI draws an ISO/SAE 21434 architecture image.
+
+    Accepts a natural-language description (and optionally the current semantic
+    ArchModel for a modify round-trip) and returns a normalized ArchModel which the
+    frontend auto-layouts and renders as a standards vector image.
+    """
+    return run_service(services.generate_diagram, to_payload(request))
 
 
 @router.post("/export-excel")

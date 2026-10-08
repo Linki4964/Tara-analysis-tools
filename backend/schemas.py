@@ -53,6 +53,15 @@ class StructureDocxRequest(BaseModel):
     runId: Optional[str] = None
 
 
+class DiagramRequest(BaseModel):
+    projectName: Optional[str] = None
+    description: str
+    # Full ArchModel already on the canvas; presence switches the AI into "modify" mode.
+    currentModel: Optional[dict[str, Any]] = None
+    mode: Optional[Literal["create", "modify"]] = None
+    runId: Optional[str] = None
+
+
 class ExportExcelRequest(BaseModel):
     projectName: Optional[str] = None
     assets: list[dict[str, Any]] = Field(default_factory=list)

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Architecture Diagram Editor</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "on-tertiary-container": "#babcbe",
+                "tertiary-container": "#494c4e",
+                "outline": "#737783",
+                "surface-container": "#d9f2ff",
+                "tertiary-fixed": "#e0e3e5",
+                "secondary-fixed-dim": "#bbc8d0",
+                "on-tertiary": "#ffffff",
+                "on-tertiary-fixed-variant": "#444749",
+                "inverse-surface": "#163440",
+                "secondary-container": "#d7e4ec",
+                "surface-dim": "#c0dfee",
+                "tertiary": "#323537",
+                "on-secondary-fixed-variant": "#3c494f",
+                "on-primary": "#ffffff",
+                "surface-container-high": "#ceedfd",
+                "on-error": "#ffffff",
+                "surface-container-lowest": "#ffffff",
+                "inverse-primary": "#b0c6ff",
+                "inverse-on-surface": "#e0f4ff",
+                "surface-container-highest": "#c9e7f7",
+                "surface-variant": "#c9e7f7",
+                "primary-fixed-dim": "#b0c6ff",
+                "on-surface": "#001f2a",
+                "primary-container": "#0d47a1",
+                "on-error-container": "#93000a",
+                "secondary-fixed": "#d7e4ec",
+                "outline-variant": "#c3c6d4",
+                "on-primary-fixed": "#001945",
+                "surface-bright": "#f4faff",
+                "on-primary-container": "#a1bbff",
+                "surface-tint": "#2b5bb5",
+                "tertiary-fixed-dim": "#c4c7c9",
+                "on-tertiary-fixed": "#191c1e",
+                "on-surface-variant": "#434652",
+                "secondary": "#546067",
+                "on-secondary-fixed": "#111d23",
+                "background": "#f4faff",
+                "error-container": "#ffdad6",
+                "error": "#ba1a1a",
+                "on-background": "#001f2a",
+                "surface": "#f4faff",
+                "on-secondary-container": "#5a666d",
+                "primary": "#003178",
+                "surface-container-low": "#e6f6ff",
+                "on-secondary": "#ffffff",
+                "primary-fixed": "#d9e2ff",
+                "on-primary-fixed-variant": "#00429c"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.125rem",
+                "lg": "0.25rem",
+                "xl": "0.5rem",
+                "full": "0.75rem"
+        },
+        "spacing": {
+                "md": "16px",
+                "xs": "4px",
+                "xl": "32px",
+                "base": "8px",
+                "margin-desktop": "32px",
+                "lg": "24px",
+                "sm": "12px",
+                "gutter": "24px",
+                "margin-mobile": "16px"
+        },
+        "fontFamily": {
+                "headline-md": [
+                        "Inter"
+                ],
+                "label-md": [
+                        "Inter"
+                ],
+                "display-lg": [
+                        "Inter"
+                ],
+                "body-md": [
+                        "Inter"
+                ],
+                "headline-lg": [
+                        "Inter"
+                ],
+                "data-mono": [
+                        "Inter"
+                ],
+                "body-lg": [
+                        "Inter"
+                ]
+        },
+        "fontSize": {
+                "headline-md": [
+                        "20px",
+                        {
+                                "lineHeight": "28px",
+                                "fontWeight": "600"
+                        }
+                ],
+                "label-md": [
+                        "12px",
+                        {
+                                "lineHeight": "16px",
+                                "letterSpacing": "0.05em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "display-lg": [
+                        "36px",
+                        {
+                                "lineHeight": "44px",
+                                "letterSpacing": "-0.02em",
+                                "fontWeight": "700"
+                        }
+                ],
+                "body-md": [
+                        "14px",
+                        {
+                                "lineHeight": "20px",
+                                "fontWeight": "400"
+                        }
+                ],
+                "headline-lg": [
+                        "28px",
+                        {
+                                "lineHeight": "36px",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "data-mono": [
+                        "14px",
+                        {
+                                "lineHeight": "20px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "body-lg": [
+                        "16px",
+                        {
+                                "lineHeight": "24px",
+                                "fontWeight": "400"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script>
+<style>
+        .dot-grid {
+            background-color: #f9fafb;
+            background-size: 24px 24px;
+            background-image: radial-gradient(circle, #e5e7eb 1.5px, transparent 1.5px);
+        }
+        .hide-scroll::-webkit-scrollbar {
+            display: none;
+        }
+        .hide-scroll {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 h-screen overflow-hidden flex flex-col font-body-md">
+<!-- TopNavBar -->
+<header class="bg-white/90 backdrop-blur-md text-gray-800 font-body-md border-b border-gray-200 shadow-sm flex justify-between items-center w-full px-lg h-14 sticky z-50">
+<div class="flex items-center gap-md">
+<button class="p-1 rounded hover:bg-gray-100 transition-colors text-gray-600">
+<span class="material-symbols-outlined" style="font-size: 24px;">menu</span>
+</button>
+<span class="font-headline-md text-body-lg font-semibold text-gray-800">Smart Enterprise Management System</span>
+</div>
+<div class="flex items-center gap-sm">
+<button class="p-1.5 rounded-full hover:bg-gray-100 transition-colors border border-gray-300 text-gray-700 cursor-pointer active:scale-95 flex items-center justify-center h-8 w-8">
+<span class="material-symbols-outlined" style="font-size: 20px;">play_arrow</span>
+</button>
+<button class="px-3 py-1.5 rounded-full hover:bg-gray-100 transition-colors border border-gray-300 text-gray-700 flex items-center gap-1 cursor-pointer active:scale-95 h-8">
+<span class="material-symbols-outlined" style="font-size: 18px;">exit_to_app</span>
+<span class="text-label-md">导出</span>
+</button>
+<button class="px-3 py-1.5 rounded-full hover:bg-gray-100 transition-colors border border-gray-300 text-gray-700 flex items-center gap-1 cursor-pointer active:scale-95 h-8">
+<span class="material-symbols-outlined" style="font-size: 18px;">share</span>
+<span class="text-label-md">共享</span>
+</button>
+<div class="w-8 h-8 rounded-full bg-blue-50 border border-blue-200 flex items-center justify-center overflow-hidden ml-2">
+<img alt="User avatar" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDZq21lAa7itD-sJvJD7XEw-lK5TG3ayvNIZJRSNm6DATRQzl6KpoXWn0lNPopBA6iHUbPDNnI7dkl4NNgubsZmjyds1yLe-G6GyPfd-GSchA0AOj-SLIYDGmsofhgQxg9W17s3-dt7FqfRpCvKAopWW2HkmUzdrCEquRqZwyKH-ylox-jpEvDzx_Tb1qF7xcAIb6I714l35uJG4cJbq7PJ4SV1z_XHpgCSRjDNCVRWuTFr_hL7nM-FLw"/>
+</div>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden relative">
+<!-- Main Canvas Area -->
+<main class="flex-1 relative dot-grid overflow-hidden flex items-center justify-center">
+<!-- Floating Log Window (Left) -->
+<div class="absolute top-lg left-lg z-40 w-72 bg-white/95 backdrop-blur-xl border border-gray-200 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[500px]">
+<div class="p-3 border-b border-gray-200 flex items-center justify-between bg-gray-50/50">
+<div class="flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-gray-300"></span>
+<span class="w-2 h-2 rounded-full bg-gray-300"></span>
+</div>
+</div>
+<div class="p-4 flex-1 overflow-y-auto hide-scroll text-gray-700 space-y-4">
+<div class="flex gap-3">
+<img class="w-8 h-8 rounded-full bg-blue-50" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCfchEeYqhJwx-EvwpgWD6d0Inzv8thwqBkUjha2To3Y-x8Mod6kwd1QrIKc_-YcBiY5AFfnA3ZwmnbHAjhXQjlia8tt7MicaoJ1Bn482jEOZaXltrFCVDqybT_fOzIC5xDyxfLUokMrt5BVCIOD1UkmRdUfDyUECCvbPtTBwz_M5NIKnbmnJ-dXg4-MjFpzrjhKij8IbHq71KcQJSXU6hUvREBSgB8cL1VVmHCr-9uvzT-GSu9bZHK1g"/>
+<div>
+<p class="text-sm font-semibold text-gray-800">对这个智能体日志的...</p>
+<p class="text-xs mt-2 text-gray-600 leading-relaxed">
+                行了视觉升级，采用了更圆润的胶囊造型与细腻的阴影处理。增强了输入时的视觉聚焦感，并配备了标志性的 AI 灵感图标。
+            </p>
+<ul class="list-disc pl-4 mt-2 text-xs text-gray-600 space-y-1">
+<li>快捷菜单入口：按照您的要求，主菜单已移至左上角，以独立的浮动按钮形式存在，使操作路径更加直观，同时也释放了左侧的视觉空间。</li>
+<li>全屏创作画布：通过移除固定侧边栏，您的绘图空间得到了最大程度的扩展，让您可以更专注地进行架构设计。</li>
+</ul>
+<p class="text-xs mt-2 text-gray-600">您可以尝试在更宽敞的画布上操作，或者告诉我是否需要进一步调整悬浮窗的透明度或输入框的交互动效？</p>
+</div>
+</div>
+</div>
+<div class="p-3 border-t border-gray-200 bg-gray-50/50 flex items-center justify-between cursor-pointer hover:bg-gray-100 transition-colors">
+<div class="flex items-center gap-2 text-gray-700">
+<span class="material-symbols-outlined text-primary" style="font-size: 20px;">rocket_launch</span>
+<span class="text-sm font-medium">智能体日志</span>
+</div>
+<span class="material-symbols-outlined text-gray-400">expand_more</span>
+</div>
+</div>
+<!-- Floating Component Library (Right Panel) -->
+<div class="absolute top-lg right-16 z-40 w-64 bg-white/95 backdrop-blur-xl border border-gray-200 rounded-2xl shadow-xl overflow-hidden max-h-[80vh] flex flex-col hidden md:flex">
+<div class="p-4 border-b border-gray-200 flex items-center justify-between bg-gray-50/50">
+<span class="font-semibold text-gray-800">组件库</span>
+<span class="material-symbols-outlined text-gray-500 cursor-pointer hover:text-gray-800 transition-colors" style="font-size: 20px;">search</span>
+</div>
+<div class="flex-1 overflow-y-auto hide-scroll p-2 space-y-2">
+<!-- Category: Hardware -->
+<div class="rounded-xl overflow-hidden bg-gray-50 border border-gray-100">
+<button class="w-full flex items-center justify-between p-3 text-left hover:bg-gray-100 transition-colors">
+<span class="text-xs font-semibold text-gray-800 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" style="font-size: 16px;">memory</span>
+          硬件组件 (Hardware)
+        </span>
+<span class="material-symbols-outlined text-gray-400" style="font-size: 16px;">expand_more</span>
+</button>
+<div class="p-2 grid grid-cols-2 gap-2 bg-gray-50/50 border-t border-gray-100">
+<div class="border border-gray-200 rounded-lg p-2 flex flex-col items-center justify-center gap-1 hover:bg-gray-50 hover:shadow-sm hover:border-gray-300 cursor-grab transition-all bg-white shadow-sm">
+<span class="material-symbols-outlined text-gray-600" style="font-size: 20px;">dns</span>
+<span class="text-[10px] text-gray-700 font-medium">ECU</span>
+</div>
+<div class="border border-gray-200 rounded-lg p-2 flex flex-col items-center justify-center gap-1 hover:bg-gray-50 hover:shadow-sm hover:border-gray-300 cursor-grab transition-all bg-white shadow-sm">
+<span class="material-symbols-outlined text-gray-600" style="font-size: 20px;">developer_board</span>
+<span class="text-[10px] text-gray-700 font-medium">MCU</span>
+</div>
+</div>
+</div>
+<!-- Category: Software -->
+<div class="rounded-xl overflow-hidden bg-gray-50 border border-gray-100">
+<button class="w-full flex items-center justify-between p-3 text-left hover:bg-gray-100 transition-colors">
+<span class="text-xs font-semibold text-gray-800 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" style="font-size: 16px;">code</span>
+          软件单元 (Software)
+        </span>
+<span class="material-symbols-outlined text-gray-400" style="font-size: 16px;">expand_more</span>
+</button>
+</div>
+<!-- Category: Communication Bus -->
+<div class="rounded-xl overflow-hidden bg-gray-50 border border-gray-100">
+<button class="w-full flex items-center justify-between p-3 text-left hover:bg-gray-100 transition-colors">
+<span class="text-xs font-semibold text-gray-800 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" style="font-size: 16px;">cable</span>
+          通信总线 (Bus)
+        </span>
+<span class="material-symbols-outlined text-gray-400" style="font-size: 16px;">expand_less</span>
+</button>
+<div class="p-2 grid grid-cols-2 gap-2 bg-gray-50/50 border-t border-gray-100">
+<div class="border border-primary/40 bg-blue-50/50 rounded-lg p-2 flex flex-col items-center justify-center gap-1 hover:shadow-sm cursor-grab transition-all shadow-sm">
+<span class="material-symbols-outlined text-primary" style="font-size: 20px;">settings_input_component</span>
+<span class="text-[10px] text-primary font-medium">FlexRay</span>
+</div>
+<div class="border border-gray-200 rounded-lg p-2 flex flex-col items-center justify-center gap-1 hover:bg-gray-50 hover:shadow-sm hover:border-gray-300 cursor-grab transition-all bg-white shadow-sm">
+<span class="material-symbols-outlined text-gray-600" style="font-size: 20px;">timeline</span>
+<span class="text-[10px] text-gray-700 font-medium">CAN</span>
+</div>
+</div>
+</div>
+<!-- Category: Security Controls -->
+<div class="rounded-xl overflow-hidden bg-gray-50 border border-gray-100">
+<button class="w-full flex items-center justify-between p-3 text-left hover:bg-gray-100 transition-colors">
+<span class="text-xs font-semibold text-gray-800 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" style="font-size: 16px;">security</span>
+          安全控件 (Security)
+        </span>
+<span class="material-symbols-outlined text-gray-400" style="font-size: 16px;">expand_more</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Floating Toolbar (Far Right) -->
+<div class="absolute right-4 top-1/2 -translate-y-1/2 z-40 bg-white/95 backdrop-blur-xl border border-gray-200 rounded-full py-2 px-1.5 flex flex-col gap-2 shadow-xl">
+<button class="p-1.5 rounded-full bg-blue-50 text-primary transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">near_me</span>
+</button>
+<button class="p-1.5 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">crop_free</span>
+</button>
+<button class="p-1.5 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">edit</span>
+</button>
+<button class="p-1.5 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">pan_tool</span>
+</button>
+<button class="p-1.5 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">image</span>
+</button>
+<button class="p-1.5 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">palette</span>
+</button>
+<button class="p-1.5 rounded-full text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-size: 20px; font-weight: 300;">star</span>
+</button>
+</div>
+<!-- Flowchart Nodes -->
+<div class="relative w-full h-full">
+<!-- Connection Line (SVG) -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none" style="z-index: 1;">
+<!-- Line from Gateway to FlexRay -->
+<path d="M 400 350 C 500 350, 500 350, 600 350" fill="none" marker-end="url(#arrowhead)" stroke="#003178" stroke-dasharray="4 4" stroke-width="2"></path>
+<defs>
+<marker id="arrowhead" markerheight="7" markerwidth="10" orient="auto" refx="9" refy="3.5">
+<polygon fill="#003178" points="0 0, 10 3.5, 0 7"></polygon>
+</marker>
+</defs>
+</svg>
+<!-- Node 1: Gateway -->
+<div class="absolute left-[200px] top-[300px] bg-white p-4 rounded-xl border border-gray-200 shadow-xl w-44 z-10 flex flex-col items-center cursor-move hover:shadow-2xl transition-shadow text-gray-800">
+<div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center mb-2 text-primary">
+<span class="material-symbols-outlined text-xl">router</span>
+</div>
+<h3 class="font-semibold text-sm">网关</h3>
+<p class="text-xs text-gray-500 mt-0.5">Gateway</p>
+<!-- Connection Ports -->
+<div class="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-primary rounded-full cursor-crosshair"></div>
+</div>
+<!-- Node 2: FlexRay Bus -->
+<div class="absolute left-[600px] top-[300px] bg-white p-4 rounded-xl border border-gray-200 shadow-xl w-44 z-10 flex flex-col items-center cursor-move hover:shadow-2xl transition-shadow text-gray-800">
+<div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center mb-2 text-primary">
+<span class="material-symbols-outlined text-xl">settings_input_component</span>
+</div>
+<h3 class="font-semibold text-sm">FlexRay 总线</h3>
+<p class="text-xs text-gray-500 mt-0.5">FlexRay Bus</p>
+<!-- Connection Ports -->
+<div class="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 bg-white border-2 border-primary rounded-full cursor-crosshair"></div>
+</div>
+</div>
+<!-- Floating AI Chat Bar (Bottom Center) -->
+<div class="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-2xl z-40">
+<div class="flex flex-wrap gap-2 mb-3 px-4 justify-center">
+<button class="bg-white/90 border border-gray-200 hover:bg-gray-50 shadow-sm text-gray-600 text-xs px-3 py-1.5 rounded-full transition-colors backdrop-blur-md">将右侧组件库也改为悬浮样式 1</button>
+<button class="bg-white/90 border border-gray-200 hover:bg-gray-50 shadow-sm text-gray-600 text-xs px-3 py-1.5 rounded-full transition-colors backdrop-blur-md">为 AI 输入框添加发送时的动画效果 2</button>
+<button class="bg-white/90 border border-gray-200 hover:bg-gray-50 shadow-sm text-gray-600 text-xs px-3 py-1.5 rounded-full transition-colors backdrop-blur-md">在顶部添加一...</button>
+</div>
+<div class="bg-white/95 backdrop-blur-xl rounded-full shadow-2xl border border-gray-200 p-2 flex items-center gap-2 transition-all focus-within:ring-2 focus-within:ring-blue-500/20 w-full">
+<div class="px-3 text-gray-400 text-sm">
+        您想更改或创建什么内容?
+      </div>
+<div class="flex-1 flex items-center">
+<button class="p-1.5 text-gray-500 hover:text-gray-800"><span class="material-symbols-outlined text-xl">add</span></button>
+<span class="text-gray-300 mx-1">/</span>
+</div>
+<div class="flex items-center gap-1 pr-1">
+<button class="p-1.5 text-gray-500 hover:text-gray-800 rounded-full"><span class="material-symbols-outlined text-[18px]">add_box</span></button>
+<button class="p-1.5 text-gray-500 hover:text-gray-800 rounded-full"><span class="material-symbols-outlined text-[18px]">palette</span></button>
+<button class="flex items-center gap-1 px-2 py-1 bg-gray-50 hover:bg-gray-100 rounded-md border border-gray-200 text-gray-700 text-xs mx-1">
+            3 Flash <span class="material-symbols-outlined text-[14px]">expand_more</span>
+</button>
+<button class="p-1.5 text-gray-500 hover:text-gray-800 rounded-full"><span class="material-symbols-outlined text-[18px]">cleaning_services</span></button>
+<button class="w-8 h-8 bg-primary hover:bg-primary/90 text-white shadow-md rounded-full flex items-center justify-center transition-colors ml-1">
+<span class="material-symbols-outlined text-[18px]">arrow_upward</span>
+</button>
+</div>
+</div>
+</div>
+<div class="absolute bottom-6 right-8 flex gap-2 z-30">
+<button class="w-10 h-10 rounded-full bg-white/90 border border-gray-200 shadow-md flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-50 backdrop-blur-md transition-colors">
+<span class="material-symbols-outlined text-[18px]">undo</span>
+</button>
+<button class="w-10 h-10 rounded-full bg-white/90 border border-gray-200 shadow-md flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-50 backdrop-blur-md transition-colors">
+<span class="material-symbols-outlined text-[18px]">redo</span>
+</button>
+<div class="h-10 px-4 rounded-full bg-white/90 border border-gray-200 shadow-md flex items-center justify-center text-gray-700 text-sm font-medium backdrop-blur-md">
+        36%
+    </div>
+<button class="w-10 h-10 rounded-full bg-white/90 border border-gray-200 shadow-md flex items-center justify-center text-gray-600 hover:text-gray-900 hover:bg-gray-50 backdrop-blur-md ml-2 transition-colors">
+<span class="material-symbols-outlined text-[18px]">help</span>
+</button>
+</div>
+</main>
+</div>
+</body></html>

@@ -1,860 +1,714 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+/**
+ * Step 0 · 结构图 — 矢量画板。
+ *
+ * 页面本身是一个自由矢量画板：右侧工具栏选图元（实线矩形 / 虚线矩形 /
+ * 圆形 / 单向箭头 / 双向箭头 / 文字），直接在画布上按住拖拽绘制，之后可
+ * 选中、拖动、改大小、双击编辑文字。所有内容（含底部 AI 生成图）都会变成
+ * 普通可编辑的矢量对象，坐标由绘图者决定，不再做语义模型 + 自动排版。
+ *
+ * 保留的外围功能不变：顶部导航（返回 / 撤销重做 / 缩放 / 导出 / 下一步）、
+ * 左侧运行记录、底部 AI 输入、localStorage 持久化（key `tara-arch:*`）。
+ */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ReactFlow,
-  ReactFlowProvider,
-  Background,
-  BackgroundVariant,
-  Controls,
-  Handle,
-  NodeResizer,
-  Position,
-  addEdge,
-  applyEdgeChanges,
-  applyNodeChanges,
-  useReactFlow,
-  type Connection,
-  type Edge,
-  type Node,
-  type NodeProps,
-  type NodeTypes,
-  type OnEdgesChange,
-  type OnNodesChange,
-} from '@xyflow/react';
-import '@xyflow/react/dist/style.css';
-import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Box,
-  BringToFront,
-  ChevronDown,
-  ClipboardPaste,
-  Copy,
-  CopyPlus,
-  Cpu,
-  Database,
   Download,
-  Eraser,
-  Globe,
-  Group,
-  Hand,
-  Lock,
-  LockOpen,
+  FileJson,
+  Loader2,
+  Menu,
   MessageSquare,
-  MousePointer2,
-  PenLine,
-  Scissors,
+  Minus,
+  Plus,
+  Redo2,
+  Scan,
   Send,
-  SendToBack,
-  Shield,
-  Terminal,
+  Share2,
   Trash2,
-  Ungroup,
+  Undo2,
+  X,
 } from 'lucide-react';
+import DrawCanvas, { type ContextOpen } from '../diagram/canvas';
+import Toolbox from '../diagram/toolbox';
+import {
+  contentBounds,
+  flattenArchModel,
+  makeShapeIdFactory,
+  resolveConnectors,
+  sanitizeShapes,
+} from '../diagram/shapes';
+import type { DrawShape, ShapeKind, ToolId } from '../diagram/shapes';
+import { sanitizeModel } from '../diagram/types';
+import { exportJson, exportPngFile, exportSvgFile } from '../diagram/export';
 import { taraApi } from '../api/taraApi';
 
-type AssetNodeType = 'hardware' | 'software' | 'data' | 'external' | 'boundary';
-
-type AssetNodeData = {
-  label: string;
-  type: AssetNodeType;
-  locked?: boolean;
-  editing?: boolean;
-  onRename?: (id: string, label: string) => void;
-};
-
-type Mode = 'select' | 'edit' | 'pan';
-
-const NODE_TYPE_META: Record<AssetNodeType, { label: string; icon: typeof Cpu; cls: string }> = {
-  hardware: { label: '硬件', icon: Cpu, cls: 'hardware' },
-  software: { label: '软件', icon: Box, cls: 'software' },
-  data: { label: '数据', icon: Database, cls: 'data' },
-  external: { label: '外部实体', icon: Globe, cls: 'external' },
-  boundary: { label: '系统边界', icon: Shield, cls: 'boundary' },
-};
-
-const PALETTE: Array<{ type: AssetNodeType; hint: string }> = [
-  { type: 'hardware', hint: 'ECU、网关等物理组件' },
-  { type: 'software', hint: '应用、固件、服务' },
-  { type: 'data', hint: '数据资产' },
-  { type: 'external', hint: '外部系统 / 人员' },
-  { type: 'boundary', hint: '划定系统分析边界' },
-];
-
-const STORAGE_PREFIX = 'tara-diagram:';
-
-function readSaved(key: string): { nodes?: Node<AssetNodeData>[]; edges?: Edge[] } | null {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as { nodes?: Node<AssetNodeData>[]; edges?: Edge[] };
-  } catch {
-    return null;
-  }
-}
-
-function AssetNode({ id, data, selected }: NodeProps) {
-  const d = data as AssetNodeData;
-  const meta = NODE_TYPE_META[d.type] || NODE_TYPE_META.hardware;
-  const Icon = meta.icon;
-  return (
-    <div className={`asset-node asset-node--${meta.cls}`}>
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={120}
-        minHeight={40}
-        color="#2563eb"
-        lineClassName="asset-node-resizer-line"
-        handleClassName="asset-node-resizer-handle"
-      />
-      <Handle type="target" position={Position.Left} className="asset-node-handle" />
-      <span className="asset-node-icon"><Icon size={18} /></span>
-      {d.editing ? (
-        <input
-          className="asset-node-input"
-          autoFocus
-          defaultValue={d.label}
-          onClick={(e) => e.stopPropagation()}
-          onBlur={(e) => d.onRename?.(id, e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-            if (e.key === 'Escape') d.onRename?.(id, d.label);
-          }}
-        />
-      ) : (
-        <span className="asset-node-label">{d.label}</span>
-      )}
-      {d.locked && !d.editing && <Lock size={12} className="asset-node-lock" />}
-      <Handle type="source" position={Position.Right} className="asset-node-handle" />
-    </div>
-  );
-}
-
-function GroupNode({ data, selected }: NodeProps) {
-  const d = data as { label?: string };
-  return (
-    <div className={`group-node ${selected ? 'group-node--selected' : ''}`}>
-      {d.label && <span className="group-node-label">{d.label}</span>}
-    </div>
-  );
-}
-
-const nodeTypes: NodeTypes = { asset: AssetNode, group: GroupNode };
-
-type DiagramCanvasProps = {
+export interface DiagramEmbedProps {
   runId?: string | null;
   notify?: (msg: string) => void;
-  onStats?: (nodeCount: number) => void;
+  onStats?: (count: number) => void;
   onBack?: () => void;
   onNext?: () => void;
-};
+}
 
-function DiagramCanvas({ runId, notify, onStats, onBack, onNext }: DiagramCanvasProps) {
-  const { screenToFlowPosition, deleteElements } = useReactFlow();
+const DEFAULT_NAME = '系统架构画板';
 
-  const [projectName, setProjectName] = useState('');
-  const [nodes, setNodes] = useState<Node[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
-  const [selected, setSelected] = useState<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] });
-  const [chatText, setChatText] = useState('');
-  const [agentOpen, setAgentOpen] = useState(true);
-  const [toast, setToast] = useState('');
-  const [loadedKey, setLoadedKey] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>('select');
-  const [menu, setMenu] = useState<{ x: number; y: number; nodeId: string | null } | null>(null);
-  const clipboardRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
-  const idCounter = useRef(0);
+const CHIP_EXAMPLES = [
+  'TBOX 通过整车 CAN 总线连接 VCU 与中央网关；手机 APP 经 TSP 云端远程下发控制指令；攻击者可能经蓝牙或 OBD 进入，网关处有防火墙。',
+  '为网关增加入侵检测（IDS）服务，并把 OBD 诊断口划入独立信任边界。',
+];
 
-  const runKey = runId ? `${STORAGE_PREFIX}${runId}` : `${STORAGE_PREFIX}pending`;
+const SUGGEST = '描述整车系统构成，让 AI 画一版架构草图（可继续手动修改）…';
 
-  const isPan = mode === 'pan';
-  const isEdit = mode === 'edit';
+type LogLine = { kind: 'step' | 'ok' | 'err' | 'think'; text: string };
 
-  function showToast(msg: string) {
-    if (notify) notify(msg);
-    else setToast(msg);
+interface BoardDoc {
+  name: string;
+  shapes: DrawShape[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Storage (with migration from the old semantic model format)         */
+/* ------------------------------------------------------------------ */
+
+function storageKey(runId?: string | null): string {
+  return runId ? `tara-arch:${runId}` : 'tara-arch:pending';
+}
+
+function emptyDoc(): BoardDoc {
+  return { name: DEFAULT_NAME, shapes: [] };
+}
+
+/** Coerce parsed localStorage / import payload into a BoardDoc. */
+function coerceDoc(parsed: unknown): BoardDoc {
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const o = parsed as Record<string, unknown>;
+    // new vector format
+    if (Array.isArray(o.shapes)) {
+      return { name: typeof o.name === 'string' ? o.name : DEFAULT_NAME, shapes: sanitizeShapes(o.shapes) };
+    }
+    // legacy semantic format → flatten into editable shapes once
+    if (o.components || o.schemaVersion) {
+      const model = sanitizeModel(parsed);
+      return { name: model.item.name || DEFAULT_NAME, shapes: flattenArchModel(model) };
+    }
+    return emptyDoc();
   }
+  if (Array.isArray(parsed)) return { name: DEFAULT_NAME, shapes: sanitizeShapes(parsed) };
+  return emptyDoc();
+}
 
-  const commitRename = useCallback((id: string, label: string) => {
-    const clean = label.trim();
-    setNodes((nds) =>
-      nds.map((n) => {
-        if (n.id !== id) return n;
-        const d = n.data as AssetNodeData;
-        return { ...n, data: { ...d, label: clean || d.label, editing: false } };
-      })
-    );
+function loadStored(key: string): BoardDoc {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return emptyDoc();
+    return coerceDoc(JSON.parse(raw) as unknown);
+  } catch {
+    return emptyDoc();
+  }
+}
+
+function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedProps) {
+  const keyRef = useRef(storageKey(runId));
+  const [doc, setDoc] = useState<BoardDoc>(() => loadStored(keyRef.current));
+  const shapes = doc.shapes;
+
+  const [past, setPast] = useState<DrawShape[][]>([]);
+  const [future, setFuture] = useState<DrawShape[][]>([]);
+
+  const [chatText, setChatText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [aiLog, setAiLog] = useState<LogLine[]>([
+    { kind: 'think', text: '无限矢量画板：画布没有大小限制，左侧日志/右侧工具/底部输入都悬浮在画布上。右侧选图元直接拖拽绘制；箭头工具点矩形会浮现四向连接点，拖向其它矩形即成智能连线。选中后右键可复制/删除/置顶置底；鼠标中键拖动平移，导航栏按钮调整缩放。也可在底部描述整车架构，让 AI 先画一版草图。' },
+  ]);
+  const [logOpen, setLogOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [opsOpen, setOpsOpen] = useState(false);
+  const [zoom, setZoom] = useState(0.85);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [tool, setTool] = useState<ToolId>('select');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [toast, setToast] = useState('');
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+
+  const stageRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const clipRef = useRef<DrawShape[]>([]);
+  const logRef = useRef<HTMLDivElement>(null);
+  const persistTimer = useRef<number | null>(null);
+  const toastTimer = useRef<number | null>(null);
+
+  const nonText = useMemo(() => shapes.filter((s) => s.kind !== 'text').length, [shapes]);
+  const hasContent = nonText > 0;
+  const empty = shapes.length === 0;
+  const view = useMemo(() => resolveConnectors(shapes), [shapes]);
+  // Selected ids in drawing order (keeps z-order ops predictable) + quick count.
+  const selectedShapes = useMemo(() => {
+    const set = new Set(selectedIds);
+    return shapes.filter((s) => set.has(s.id));
+  }, [shapes, selectedIds]);
+  const selCount = selectedShapes.length;
+
+  /* ---------- persistence (debounced) ---------- */
+  useEffect(() => {
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(keyRef.current, JSON.stringify({ name: doc.name, shapes }));
+      } catch {
+        /* storage full — ignore */
+      }
+    }, 250);
+    return () => {
+      if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc]);
+
+  /* ---------- stats to parent ---------- */
+  useEffect(() => {
+    onStats?.(nonText);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonText]);
+
+  const showToast = useCallback((msg: string) => {
+    notify?.(msg);
+    setToast(msg);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(''), 2200);
+  }, [notify]);
+
+  /* ---------- history ---------- */
+  const canUndo = past.length > 0;
+  const canRedo = future.length > 0;
+
+  const commitShapes = useCallback(
+    (next: DrawShape[], opts?: { record?: boolean }) => {
+      const record = opts?.record !== false;
+      if (JSON.stringify(next) === JSON.stringify(shapes)) return;
+      if (record) {
+        setPast((p) => {
+          const arr = [...p, shapes];
+          return arr.length > 50 ? arr.slice(arr.length - 50) : arr;
+        });
+        setFuture([]);
+      }
+      setDoc((d) => ({ ...d, shapes: next }));
+    },
+    [shapes]
+  );
+
+  const undo = useCallback(() => {
+    setPast((p) => {
+      if (!p.length) return p;
+      const prev = p[p.length - 1];
+      setFuture((f) => [...f, shapes]);
+      setDoc((d) => ({ ...d, shapes: prev }));
+      setSelectedIds([]);
+      return p.slice(0, -1);
+    });
+  }, [shapes]);
+
+  const redo = useCallback(() => {
+    setFuture((f) => {
+      if (!f.length) return f;
+      const nxt = f[f.length - 1];
+      setPast((p) => [...p, shapes]);
+      setDoc((d) => ({ ...d, shapes: nxt }));
+      setSelectedIds([]);
+      return f.slice(0, -1);
+    });
+  }, [shapes]);
+
+  /* ---------- context menu / clipboard / z-order ---------- */
+  const copySelection = useCallback(() => {
+    if (!selCount) return;
+    clipRef.current = selectedShapes;
+    showToast(`已复制 ${selCount} 个对象`);
+    setCtxMenu(null);
+  }, [selCount, selectedShapes, showToast]);
+
+  const cutSelection = useCallback(() => {
+    if (!selCount) return;
+    const gone = new Set(selectedIds);
+    clipRef.current = selectedShapes;
+    commitShapes(resolveConnectors(shapes.filter((s) => !gone.has(s.id))));
+    setSelectedIds([]);
+    setCtxMenu(null);
+    showToast(`已剪切 ${selCount} 个对象`);
+  }, [shapes, selectedIds, selectedShapes, selCount, commitShapes, showToast]);
+
+  const pasteClipboard = useCallback(() => {
+    const ones = clipRef.current;
+    if (!ones.length) return;
+    const factory = makeShapeIdFactory(shapes);
+    const prefixFor = (k: ShapeKind) => (k === 'arrow' ? 'a' : k === 'circle' ? 'o' : k === 'text' ? 't' : 'r');
+    const added = ones.map((s, i) => {
+      const off = 20 + i * 24;
+      const nid = factory(prefixFor(s.kind));
+      if (s.kind === 'arrow') {
+        // pasted lines become freehand so they don't bind to the original shapes
+        return { ...s, id: nid, ca: null, cb: null, x1: s.x1 + off, y1: s.y1 + off, x2: s.x2 + off, y2: s.y2 + off };
+      }
+      return { ...s, id: nid, x: s.x + off, y: s.y + off };
+    });
+    commitShapes(resolveConnectors([...shapes, ...added]));
+    setSelectedIds(added.map((a) => a.id));
+    setCtxMenu(null);
+    showToast(`已粘贴 ${added.length} 个对象`);
+  }, [shapes, commitShapes, showToast]);
+
+  const zMove = useCallback((toFront: boolean) => {
+    if (!selCount) return;
+    const picked = new Set(selectedIds);
+    const keep = shapes.filter((s) => !picked.has(s.id));   // drawing order
+    const chosen = shapes.filter((s) => picked.has(s.id));  // drawing order
+    // The whole group jumps to the top (front) or bottom (back) of the stack;
+    // relative order inside the group is preserved.
+    commitShapes(toFront ? [...keep, ...chosen] : [...chosen, ...keep]);
+    setCtxMenu(null);
+  }, [shapes, selectedIds, selCount, commitShapes]);
+
+  const openCtxMenu = useCallback((info: ContextOpen) => {
+    const host = hostRef.current;
+    if (!host) return;
+    const r = host.getBoundingClientRect();
+    setCtxMenu({
+      x: Math.max(8, Math.min(info.clientX - r.left, host.clientWidth - 180)),
+      y: Math.max(8, info.clientY - r.top),
+    });
   }, []);
 
-  const startEditing = useCallback((id: string) => {
-    const node = nodes.find((n) => n.id === id);
-    if (node && (node.data as AssetNodeData).locked) {
-      showToast('节点已锁定，请先解锁');
-      return;
-    }
-    setNodes((nds) =>
-      nds.map((n) => (n.id === id ? { ...n, data: { ...(n.data as AssetNodeData), editing: true } } : n))
-    );
-  }, [nodes]);
+  /* ---------- middle-button pan: move the camera (pan) instead of scrolling ---------- */
+  const onStagePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    const st = stageRef.current;
+    if (!st) return;
+    st.setPointerCapture?.(e.pointerId);
+    const start = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+    st.classList.add('panning');
+    const move = (ev: PointerEvent) => {
+      ev.preventDefault();
+      setPan({ x: start.px + (ev.clientX - start.x), y: start.py + (ev.clientY - start.y) });
+    };
+    const end = () => {
+      st.classList.remove('panning');
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  };
 
-  const onNodesChange: OnNodesChange = useCallback(
-    (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
-    []
-  );
-  const onEdgesChange: OnEdgesChange = useCallback(
-    (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
-    []
-  );
-  const onConnect = useCallback(
-    (connection: Connection) => setEdges((eds) => addEdge({ ...connection, animated: true }, eds)),
-    []
-  );
-
-  // Load project name
   useEffect(() => {
-    if (!runId) return;
-    taraApi.getRun(runId).then((res) => {
-      if (res.run?.project_name) setProjectName(res.run.project_name);
-    }).catch(() => {});
-  }, [runId]);
-
-  // Load diagram (project key first, else migrate the pending drawing)
-  useEffect(() => {
-    const normalize = (ns: Node<AssetNodeData>[] | undefined) =>
-      (ns || []).map((n) => ({
-        ...n,
-        initialWidth: n.width ?? n.initialWidth ?? 200,
-        initialHeight: n.height ?? n.initialHeight ?? 56,
-        data: { ...(n.data as AssetNodeData), onRename: commitRename, editing: false },
-      }));
-    const saved = readSaved(runKey);
-    if (saved && (saved.nodes?.length || saved.edges?.length)) {
-      setNodes(normalize(saved.nodes));
-      setEdges(saved.edges || []);
-    } else if (runId) {
-      const pending = readSaved(`${STORAGE_PREFIX}pending`);
-      if (pending && pending.nodes?.length) {
-        setNodes(normalize(pending.nodes));
-        setEdges(pending.edges || []);
-        try {
-          window.localStorage.removeItem(`${STORAGE_PREFIX}pending`);
-        } catch { /* ignore */ }
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'Escape') {
+        setCtxMenu(null);
+        return;
       }
-    }
-    setLoadedKey(runKey);
-  }, [runKey, runId, commitRename]);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'c') { e.preventDefault(); copySelection(); return; }
+        if (k === 'x') { e.preventDefault(); cutSelection(); return; }
+        if (k === 'v') { e.preventDefault(); pasteClipboard(); return; }
+      }
+      if (tool === 'select' && selectedIds.length > 0 && (e.key === 'Delete' || e.key === 'Backspace')) {
+        e.preventDefault();
+        const gone = new Set(selectedIds);
+        commitShapes(resolveConnectors(shapes.filter((s) => !gone.has(s.id))));
+        setSelectedIds([]);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, redo, tool, selectedIds, shapes, commitShapes, copySelection, cutSelection, pasteClipboard]);
 
-  // Persist diagram
-  useEffect(() => {
-    if (loadedKey === null) return;
+  /* ---------- helpers ---------- */
+  const logLine = useCallback((kind: LogLine['kind'], text: string) => {
+    setAiLog((lines) => {
+      const next = [...lines, { kind, text }];
+      return next.length > 120 ? next.slice(next.length - 120) : next;
+    });
+    requestAnimationFrame(() => {
+      logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+    });
+  }, []);
+
+  const pushStatus = (text: string) => logLine('ok', text);
+
+  /* ---------- AI：按描述绘制一版草图（转成可编辑对象） ---------- */
+  const handleChatSend = useCallback(async () => {
+    const desc = chatText.trim();
+    if (!desc || sending) return;
+    setSending(true);
+    const wasEmpty = empty;
+    logLine('step', `AI 按描述绘制架构草图… ${desc.slice(0, 60)}`);
     try {
-      window.localStorage.setItem(loadedKey, JSON.stringify({ nodes, edges }));
-    } catch { /* storage unavailable */ }
-  }, [loadedKey, nodes, edges]);
+      const res = await taraApi.generateDiagram({
+        runId: runId || undefined,
+        description: desc,
+        mode: 'create',
+        currentModel: null,
+      });
+      if (!res.success) throw new Error('后端返回失败');
+      if (res.plan) logLine('think', `计划：${res.plan}`);
+      if (res.summary) pushStatus(`完成：${res.summary}`);
+      if (!wasEmpty) logLine('think', '原有内容会保留在“撤销”历史中，可一步恢复。');
+      for (const w of res.warnings ?? []) logLine('think', `提示：${w}`);
+      const model = sanitizeModel(res.model);
+      const nextShapes = flattenArchModel(model);
+      commitShapes(nextShapes);
+      setSelectedIds([]);
+      setChatText('');
+      setSending(false);
+      showToast(nextShapes.length ? 'AI 草图已生成，可手动修改' : '模型为空，请补充描述');
+      requestAnimationFrame(() => fitView());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logLine('err', `生成失败：${msg}`);
+      showToast('AI 生成失败，请稍后重试');
+      setSending(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatText, sending, empty, runId, commitShapes]);
 
-  // Report node count to the parent (e.g. workspace step completion)
+  /* ---------- view / zoom (camera) ---------- */
+  const clampZ = (z: number) => Math.max(0.1, Math.min(3, z));
+
+  /** zoom to `nextZoom`, keeping the model point under the viewport centre fixed. */
+  const zoomAtCenter = useCallback(
+    (nextZoom: number) => {
+      const st = stageRef.current;
+      if (!st) return;
+      const nz = clampZ(nextZoom);
+      const cx = st.clientWidth / 2;
+      const cy = st.clientHeight / 2;
+      setPan((p) => ({ x: cx - ((cx - p.x) / zoom) * nz, y: cy - ((cy - p.y) / zoom) * nz }));
+      setZoom(nz);
+    },
+    [zoom]
+  );
+
+  const zoomBy = (factor: number) => zoomAtCenter(zoom * factor);
+
+  /** centre the drawing (or, when empty, the model origin) in the viewport. */
+  const fitView = useCallback(() => {
+    const st = stageRef.current;
+    if (!st) return;
+    const W = st.clientWidth;
+    const H = st.clientHeight;
+    if (W <= 0 || H <= 0) return;
+    const b = contentBounds(shapes);
+    if (!b) {
+      setZoom(clampZ(0.9));
+      setPan({ x: W / 2, y: H / 2 });
+      return;
+    }
+    const m = 56;
+    if (W <= m * 2 || H <= m * 2) return;
+    const z = clampZ(Math.min((W - m * 2) / b.w, (H - m * 2) / b.h, 1.4));
+    setZoom(z);
+    setPan({ x: W / 2 - (b.x + b.w / 2) * z, y: H / 2 - (b.y + b.h / 2) * z });
+  }, [shapes]);
+
+  /* auto-fit on mount and whenever the board toggles between empty / non-empty */
   useEffect(() => {
-    onStats?.(nodes.length);
-  }, [nodes, onStats]);
+    const t = window.setTimeout(() => fitView(), 40);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [empty]);
 
-  useEffect(() => {
-    if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 2200);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
+  /* ---------- export ---------- */
+  const baseName = doc.name || 'architecture';
 
-  function addNode(type: AssetNodeType) {
-    const center = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
-    const jitter = (nodes.length % 5) * 24;
-    const meta = NODE_TYPE_META[type];
-    const node: Node<AssetNodeData> = {
-      id: `node-${Date.now()}-${Math.round(Math.random() * 1000)}`,
-      type: 'asset',
-      position: {
-        x: Math.round(center.x - 100 + jitter),
-        y: Math.round(center.y - 28 + jitter),
-      },
-      initialWidth: 200,
-      initialHeight: 56,
-      data: { label: meta.label, type, onRename: commitRename },
-    };
-    setNodes((nds) => [...nds, node]);
-    showToast(`已添加「${meta.label}」节点`);
-  }
+  const handleExportPng = () => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    exportPngFile(svg, baseName)
+      .then(() => showToast('PNG 已导出'))
+      .catch((e) => {
+        logLine('err', String(e instanceof Error ? e.message : e));
+        showToast('PNG 导出失败');
+      });
+  };
+  const handleExportSvg = () => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    exportSvgFile(svg, baseName);
+    showToast('SVG 已导出');
+  };
+  const handleExportJson = () => {
+    exportJson({ name: doc.name, shapes }, baseName);
+    showToast('矢量 JSON 已导出');
+  };
 
-  function handleDeleteSelected() {
-    if (!selected.nodes.length && !selected.edges.length) {
-      showToast('请先选中要删除的节点');
-      return;
-    }
-    deleteElements({ nodes: selected.nodes, edges: selected.edges });
-    setSelected({ nodes: [], edges: [] });
-  }
+  /* ---------- actions ---------- */
+  const handleClear = () => {
+    setPast((p) => [...p, shapes].slice(-50));
+    setFuture([]);
+    setDoc({ name: doc.name, shapes: [] });
+    setSelectedIds([]);
+    showToast('已清空画布（可撤销）');
+  };
 
-  function handleClear() {
-    if (!nodes.length && !edges.length) return;
-    if (!window.confirm('确定要清空画布吗？此操作不可恢复。')) return;
-    setNodes([]);
-    setEdges([]);
-    setSelected({ nodes: [], edges: [] });
-  }
+  const deleteSelected = useCallback(() => {
+    if (!selCount) return;
+    const gone = new Set(selectedIds);
+    commitShapes(resolveConnectors(shapes.filter((s) => !gone.has(s.id))));
+    setSelectedIds([]);
+    setCtxMenu(null);
+  }, [shapes, selectedIds, selCount, commitShapes]);
 
-  function handleNodeDoubleClick(_: unknown, node: Node) {
-    startEditing(node.id);
-  }
-
-  function handleNodeClick(_: unknown, node: Node) {
-    if (isEdit) startEditing(node.id);
-  }
-
-  // ---- Right-click context menu actions ----
-
-  function nextId(prefix: string) {
-    idCounter.current += 1;
-    return `${prefix}-${Date.now()}-${idCounter.current}`;
-  }
-
-  function openMenu(x: number, y: number, nodeId: string | null) {
-    setMenu({ x, y, nodeId });
-  }
-
-  function closeMenu() {
-    setMenu(null);
-  }
-
-  function actionTargets(nodeId: string | null): Node[] {
-    if (!nodeId) return [];
-    const sel = selected.nodes;
-    if (sel.some((n) => n.id === nodeId)) return sel;
-    const node = nodes.find((n) => n.id === nodeId);
-    return node ? [node] : [];
-  }
-
-  function targetsUnlocked(list: Node[]) {
-    return list.filter((n) => !(n.data as AssetNodeData).locked);
-  }
-
-  function cleanData(n: Node): Node {
-    const d = n.data as AssetNodeData;
-    return {
-      ...n,
-      parentId: undefined,
-      selected: false,
-      data: { label: d.label, type: d.type, locked: d.locked },
-    };
-  }
-
-  function copySelection(nodeId: string | null) {
-    const targets = actionTargets(nodeId);
-    if (!targets.length) {
-      showToast('请先选中要复制的节点');
-      return;
-    }
-    const ids = new Set(targets.map((n) => n.id));
-    clipboardRef.current = {
-      nodes: targets.map(cleanData),
-      edges: edges.filter((e) => ids.has(e.source) && ids.has(e.target)).map((e) => ({ ...e })),
-    };
-    showToast(`已复制 ${targets.length} 个节点`);
-  }
-
-  function cutSelection(nodeId: string | null) {
-    const all = actionTargets(nodeId);
-    if (!all.length) {
-      showToast('请先选中要剪切的节点');
-      return;
-    }
-    copySelection(nodeId);
-    deleteTargets(nodeId);
-  }
-
-  function paste(nodeId: string | null) {
-    const clip = clipboardRef.current;
-    if (!clip || !clip.nodes.length) {
-      showToast('剪贴板为空，请先复制节点');
-      return;
-    }
-    const idMap = new Map<string, string>();
-    clip.nodes.forEach((n) => idMap.set(n.id, nextId('node')));
-    const pastedNodes: Node[] = clip.nodes.map((n) => {
-      const newId = idMap.get(n.id)!;
-      return {
-        ...n,
-        id: newId,
-        position: { x: n.position.x + 40, y: n.position.y + 40 },
-        selected: true,
-        data: { ...(n.data as AssetNodeData), onRename: commitRename, editing: false },
-      };
-    });
-    const pastedEdges: Edge[] = clip.edges
-      .map((e) => ({
-        ...e,
-        id: nextId('edge'),
-        source: idMap.get(e.source) || e.source,
-        target: idMap.get(e.target) || e.target,
-        animated: true,
-        selected: false,
-      }))
-      .filter((e) => idMap.has(e.source) && idMap.has(e.target));
-    setNodes((nds) => [...nds.map((n) => ({ ...n, selected: false })), ...pastedNodes]);
-    setEdges((eds) => [...eds, ...pastedEdges]);
-    setSelected({ nodes: pastedNodes, edges: pastedEdges });
-    showToast(`已粘贴 ${pastedNodes.length} 个节点`);
-  }
-
-  function duplicateSelection(nodeId: string | null) {
-    const targets = actionTargets(nodeId);
-    if (!targets.length) {
-      showToast('请先选中要复制的节点');
-      return;
-    }
-    const ids = new Set(targets.map((n) => n.id));
-    const innerEdges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
-    const idMap = new Map<string, string>();
-    targets.forEach((n) => idMap.set(n.id, nextId('node')));
-    const dups: Node[] = targets.map((n) => {
-      const newId = idMap.get(n.id)!;
-      const d = n.data as AssetNodeData;
-      return {
-        ...cleanData(n),
-        id: newId,
-        position: { x: n.position.x + 40, y: n.position.y + 40 },
-        selected: true,
-        data: { label: d.label, type: d.type, locked: d.locked, onRename: commitRename, editing: false },
-      };
-    });
-    const dupEdges: Edge[] = innerEdges.map((e) => ({
-      ...e,
-      id: nextId('edge'),
-      source: idMap.get(e.source) || e.source,
-      target: idMap.get(e.target) || e.target,
-      selected: false,
-    }));
-    setNodes((nds) => [...nds, ...dups]);
-    setEdges((eds) => [...eds, ...dupEdges]);
-    setSelected({ nodes: dups, edges: dupEdges });
-    showToast(`已创建 ${dups.length} 个副本`);
-  }
-
-  function deleteTargets(nodeId: string | null) {
-    const all = actionTargets(nodeId);
-    if (!all.length) {
-      showToast('请先选中要删除的节点');
-      return;
-    }
-    const unlocked = targetsUnlocked(all);
-    if (!unlocked.length) {
-      showToast('所选节点均已锁定，无法删除');
-      return;
-    }
-    const ids = new Set(unlocked.map((n) => n.id));
-    // Deleting a group node also deletes its children
-    let expanded = true;
-    while (expanded) {
-      expanded = false;
-      for (const n of nodes) {
-        if (n.parentId && ids.has(n.parentId) && !ids.has(n.id)) {
-          ids.add(n.id);
-          expanded = true;
-        }
-      }
-    }
-    const skipped = all.length !== unlocked.length;
-    setNodes((nds) => nds.filter((n) => !ids.has(n.id)));
-    setEdges((eds) => eds.filter((e) => !ids.has(e.source) && !ids.has(e.target)));
-    setSelected({ nodes: [], edges: [] });
-    showToast(skipped ? `已删除 ${unlocked.length} 个节点（跳过锁定节点）` : `已删除 ${unlocked.length} 个节点`);
-  }
-
-  function bringToFront(nodeId: string | null) {
-    const targets = actionTargets(nodeId);
-    if (!targets.length) return;
-    const targetIds = new Set(targets.map((n) => n.id));
-    const maxZ = nodes.reduce((m, n) => Math.max(m, n.zIndex ?? 0), 0);
-    setNodes((nds) => {
-      const moved: Node[] = [];
-      const rest: Node[] = [];
-      for (const n of nds) {
-        const isTarget = targetIds.has(n.id);
-        if (isTarget) moved.push({ ...n, zIndex: maxZ + 1, selected: false });
-        else rest.push(n);
-      }
-      // move targets to the END of the array so they render on top
-      return [...rest, ...moved];
-    });
-    setSelected({ nodes: [], edges: [] });
-    showToast('已移到最顶层');
-  }
-
-  function sendToBack(nodeId: string | null) {
-    const targets = actionTargets(nodeId);
-    if (!targets.length) return;
-    const targetIds = new Set(targets.map((n) => n.id));
-    const minZ = nodes.reduce((m, n) => Math.min(m, n.zIndex ?? 0), 0);
-    setNodes((nds) => {
-      const moved: Node[] = [];
-      const rest: Node[] = [];
-      for (const n of nds) {
-        const isTarget = targetIds.has(n.id);
-        if (isTarget) moved.push({ ...n, zIndex: minZ - 1, selected: false });
-        else rest.push(n);
-      }
-      // move targets to the START of the array so they render on bottom
-      return [...moved, ...rest];
-    });
-    setSelected({ nodes: [], edges: [] });
-    showToast('已移到最底层');
-  }
-
-  function toggleLock(nodeId: string | null) {
-    const targets = actionTargets(nodeId);
-    if (!targets.length) return;
-    const first = targets[0];
-    const locked = !(first.data as AssetNodeData).locked;
-    const ids = new Set(targets.map((n) => n.id));
-    setNodes((nds) =>
-      nds.map((n) =>
-        ids.has(n.id)
-          ? { ...n, draggable: locked ? false : undefined, data: { ...(n.data as AssetNodeData), locked } }
-          : n
-      )
-    );
-    showToast(locked ? `已锁定 ${targets.length} 个节点` : `已解锁 ${targets.length} 个节点`);
-  }
-
-  function groupSelected(nodeId: string | null) {
-    const targets = actionTargets(nodeId).filter((n) => n.type !== 'group');
-    if (targets.length < 1) {
-      showToast('请选择要组合的节点');
-      return;
-    }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const n of targets) {
-      const w = n.measured?.width ?? n.width ?? n.initialWidth ?? 200;
-      const h = n.measured?.height ?? n.height ?? n.initialHeight ?? 56;
-      minX = Math.min(minX, n.position.x);
-      minY = Math.min(minY, n.position.y);
-      maxX = Math.max(maxX, n.position.x + w);
-      maxY = Math.max(maxY, n.position.y + h);
-    }
-    const groupId = nextId('group');
-    const targetIds = new Set(targets.map((n) => n.id));
-    setNodes((nds) => [
-      ...nds.map((n) =>
-        targetIds.has(n.id)
-          ? {
-              ...n,
-              parentId: groupId,
-              position: { x: n.position.x - minX, y: n.position.y - minY },
-              zIndex: undefined,
-            }
-          : n
-      ),
-      {
-        id: groupId,
-        type: 'group',
-        position: { x: minX, y: minY },
-        style: { width: Math.max(maxX - minX, 60), height: Math.max(maxY - minY, 40) },
-        data: { label: '分组' },
-        zIndex: -10,
-        selectable: true,
-      },
-    ]);
-    setSelected({ nodes: [], edges: [] });
-    showToast(`已组合 ${targets.length} 个节点`);
-  }
-
-  function ungroupSelection(nodeId: string | null) {
-    const group = nodes.find((n) => n.id === nodeId && n.type === 'group');
-    if (!group) {
-      showToast('请选择要取消组合的分组');
-      return;
-    }
-    setNodes((nds) => [
-      ...nds.filter((n) => n.id !== group.id && n.parentId !== group.id).map((n) => ({ ...n, selected: false })),
-      ...nds
-        .filter((n) => n.parentId === group.id)
-        .map((n) => ({
-          ...n,
-          parentId: undefined,
-          zIndex: undefined,
-          position: { x: n.position.x + group.position.x, y: n.position.y + group.position.y },
-        })),
-    ]);
-    setSelected({ nodes: [], edges: [] });
-    showToast('已取消组合');
-  }
-
-  function handleExport() {
-    const payload = {
-      projectName,
-      runId: runId || null,
-      exportedAt: new Date().toISOString(),
-      nodes,
-      edges,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const link = window.document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `${(projectName || 'diagram').replace(/[^a-zA-Z0-9_-]/g, '_')}_diagram.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    showToast('结构图已导出 (JSON)');
-  }
-
-  const agentLog = [
-    { text: '智能体已就绪', ok: true },
-    { text: '等待用户绘制资产结构图…', ok: false },
-    { text: `画布：${nodes.length} 个节点 · ${edges.length} 条连线`, ok: false },
-    { text: nodes.length === 0 ? '提示：从右侧工具栏添加资产节点' : '提示：编辑模式下点击节点改名，双击改名，拖动把手连线', ok: false },
-  ];
-
-  let menuContent: ReactNode = null;
-  if (menu) {
-    const isGroupTarget = nodes.find((n) => n.id === menu.nodeId)?.type === 'group';
-    const targetNode = menu.nodeId ? nodes.find((n) => n.id === menu.nodeId) : undefined;
-    const targetLocked = Boolean(targetNode && (targetNode.data as AssetNodeData).locked);
-    const canPaste = clipboardRef.current !== null && clipboardRef.current.nodes.length > 0;
-    const menuX = Math.max(8, Math.min(menu.x, window.innerWidth - 200 - 8));
-    const menuY = Math.max(8, Math.min(menu.y, window.innerHeight - 380 - 8));
-
-    type Item = { key: string; label: string; icon: ReactNode; danger?: boolean; disabled?: boolean; sep?: boolean; onClick: () => void };
-    const items: Item[] = [];
-    if (menu.nodeId) {
-      items.push(
-        { key: 'copy', label: '复制', icon: <Copy size={15} />, onClick: () => { copySelection(menu.nodeId); closeMenu(); } },
-        { key: 'cut', label: '剪切', icon: <Scissors size={15} />, onClick: () => { cutSelection(menu.nodeId); closeMenu(); } },
-        { key: 'paste', label: '粘贴', icon: <ClipboardPaste size={15} />, disabled: !canPaste, onClick: () => { paste(menu.nodeId); closeMenu(); } },
-        { key: 'duplicate', label: '创建副本', icon: <CopyPlus size={15} />, onClick: () => { duplicateSelection(menu.nodeId); closeMenu(); } },
-        { key: 'delete', label: '删除', icon: <Trash2 size={15} />, danger: true, sep: true, onClick: () => { deleteTargets(menu.nodeId); closeMenu(); } },
-        { key: 'front', label: '移到最顶层', icon: <BringToFront size={15} />, sep: true, onClick: () => { bringToFront(menu.nodeId); closeMenu(); } },
-        { key: 'back', label: '移到最底层', icon: <SendToBack size={15} />, onClick: () => { sendToBack(menu.nodeId); closeMenu(); } },
-        { key: 'lock', label: targetLocked ? '解锁' : '锁定', icon: targetLocked ? <LockOpen size={15} /> : <Lock size={15} />, sep: true, onClick: () => { toggleLock(menu.nodeId); closeMenu(); } },
-      );
-      if (isGroupTarget) {
-        items.push({ key: 'ungroup', label: '取消组合', icon: <Ungroup size={15} />, onClick: () => { ungroupSelection(menu.nodeId); closeMenu(); } });
-      } else {
-        items.push({ key: 'group', label: '组合', icon: <Group size={15} />, onClick: () => { groupSelected(menu.nodeId); closeMenu(); } });
-      }
-    } else {
-      items.push(
-        { key: 'paste', label: '粘贴', icon: <ClipboardPaste size={15} />, disabled: !canPaste, onClick: () => { paste(null); closeMenu(); } },
-      );
-    }
-
-    menuContent = (
-      <>
-        <div
-          className="diagram-menu-backdrop"
-          onClick={closeMenu}
-          onContextMenu={(e) => { e.preventDefault(); closeMenu(); }}
-        />
-        <div className="diagram-menu" style={{ left: menuX, top: menuY }}>
-          {items.map((item) => (
-            <Fragment key={item.key}>
-              {item.sep && <div className="diagram-menu-separator" />}
-              <button
-                className={`diagram-menu-item ${item.danger ? 'diagram-menu-item--danger' : ''}`}
-                type="button"
-                disabled={item.disabled}
-                onClick={item.onClick}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
-            </Fragment>
-          ))}
-        </div>
-      </>
-    );
-  }
+  const toggleOps = () => setOpsOpen((v) => !v);
 
   return (
-    <div className={`diagram-canvas diagram-canvas--${mode}`}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onSelectionChange={setSelected}
-        onNodeDoubleClick={handleNodeDoubleClick}
-        onNodeClick={handleNodeClick}
-        onNodeContextMenu={(event, node) => {
-          event.preventDefault();
-          openMenu(event.clientX, event.clientY, node.id);
-        }}
-        onPaneContextMenu={(event) => {
-          event.preventDefault();
-          openMenu(event.clientX, event.clientY, null);
-        }}
-        panOnDrag={isPan}
-        selectionOnDrag={!isEdit && !isPan}
-        nodesDraggable={!isEdit && !isPan}
-        nodesConnectable={!isPan}
-        elementsSelectable={!isPan}
-        fitView
-        colorMode="light"
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-        <Controls position="bottom-left" />
-      </ReactFlow>
-
-      {nodes.length === 0 && (
-        <div className="diagram-empty-hint">
-          <MousePointer2 size={30} />
-          <p>从右侧工具栏点击节点类型，开始绘制资产结构图</p>
-          <p className="diagram-empty-sub">拖动节点摆放位置 · 从节点右侧拖出连线表示数据流</p>
+    <div className="diagram-canvas">
+      {/* ------------------- infinite canvas stage (panels float above) ------------------- */}
+      <div className="arch-stage" ref={stageRef} onPointerDown={onStagePointerDown}>
+        <div className="arch-canvas-host" ref={hostRef}>
+          <DrawCanvas
+            shapes={view}
+            tool={tool}
+            zoom={zoom}
+            pan={pan}
+            selectedIds={selectedIds}
+            onSelect={setSelectedIds}
+            onCommit={(next) => commitShapes(next)}
+            contentRef={svgRef}
+            onContextOpen={openCtxMenu}
+          />
+            {empty && tool === 'select' && (
+              <div className="dc-welcome">
+                <Share2 size={34} />
+                <p>在右侧选择图元，直接在画布上绘制整车架构</p>
+                <p className="dc-welcome-sub">▢ 矩形 · ┅ 虚线框 · ● 圆形 · → 单/双箭头 · A 文字 · 中键拖动平移 · 右键菜单</p>
+              </div>
+            )}
+            {ctxMenu && (
+              <>
+                <div className="ctx-backdrop" onClick={() => setCtxMenu(null)} />
+                <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} role="menu" aria-label="画板右键菜单">
+                  <button type="button" className="ctx-item" disabled={!selCount} onClick={cutSelection} onMouseDown={(e) => e.preventDefault()}>
+                    剪切
+                  </button>
+                  <button type="button" className="ctx-item" disabled={!selCount} onClick={copySelection} onMouseDown={(e) => e.preventDefault()}>
+                    复制
+                  </button>
+                  <button type="button" className="ctx-item" disabled={clipRef.current.length === 0} onClick={pasteClipboard} onMouseDown={(e) => e.preventDefault()}>
+                    粘贴
+                  </button>
+                  <div className="ctx-sep" />
+                  <button type="button" className="ctx-item ctx-item--danger" disabled={!selCount} onClick={deleteSelected} onMouseDown={(e) => e.preventDefault()}>
+                    删除
+                  </button>
+                  <div className="ctx-sep" />
+                  <button type="button" className="ctx-item" disabled={!selCount} onClick={() => zMove(true)} onMouseDown={(e) => e.preventDefault()}>
+                    置于顶层
+                  </button>
+                  <button type="button" className="ctx-item" disabled={!selCount} onClick={() => zMove(false)} onMouseDown={(e) => e.preventDefault()}>
+                    置于底层
+                  </button>
+                </div>
+              </>
+            )}
         </div>
-      )}
+      </div>
 
-      {onBack && (
-        <button className="diagram-fab diagram-fab--back" type="button" onClick={onBack}>
-          <ArrowLeft size={15} />
-          <span>返回</span>
-        </button>
-      )}
-
-      {onNext && (
-        <button className="diagram-fab diagram-fab--next" type="button" onClick={onNext}>
-          <span>下一步</span>
-          <ArrowRight size={15} />
-        </button>
-      )}
-
-      {/* Agent log floating panel (left) */}
-      <aside className={`diagram-agentlog ${agentOpen ? '' : 'diagram-agentlog--collapsed'}`}>
-        <div className="diagram-agentlog-head" onClick={() => setAgentOpen(!agentOpen)}>
-          <Terminal size={14} />
-          <span>智能体日志</span>
-          <ChevronDown size={14} className={`diagram-agentlog-caret ${agentOpen ? '' : 'diagram-agentlog-caret--collapsed'}`} />
+      {/* ------------------------ navbar ------------------------ */}
+      <header className="diagram-navbar">
+        <div className="diagram-navbar-left">
+          <div className="diagram-navbar-menu">
+            <button type="button" className="diagram-navbar-iconbtn" onClick={toggleOps} title="菜单">
+              <Menu size={18} />
+            </button>
+            {opsOpen && (
+              <>
+                <div className="diagram-menu-backdrop" onClick={() => setOpsOpen(false)} />
+                <div className="diagram-navbar-menu-drop" onClick={(e) => e.stopPropagation()}>
+                  {onBack && (
+                    <>
+                      <button type="button" className="diagram-menu-item" onClick={() => { setOpsOpen(false); onBack(); }}>
+                        <ArrowLeft size={14} /> 返回项目
+                      </button>
+                      <div className="diagram-menu-separator" />
+                    </>
+                  )}
+                  <button type="button" className="diagram-menu-item" onClick={() => { setOpsOpen(false); handleExportPng(); }}>
+                    <Download size={14} /> 导出 PNG 图片
+                  </button>
+                  <button type="button" className="diagram-menu-item" onClick={() => { setOpsOpen(false); handleExportSvg(); }}>
+                    <Download size={14} /> 导出 SVG 矢量图
+                  </button>
+                  <button type="button" className="diagram-menu-item" onClick={() => { setOpsOpen(false); handleExportJson(); }}>
+                    <FileJson size={14} /> 导出矢量 JSON
+                  </button>
+                  <div className="diagram-menu-separator" />
+                  <button type="button" className="diagram-menu-item diagram-menu-item--danger" onClick={() => { setOpsOpen(false); handleClear(); }}>
+                    <Trash2 size={14} /> 清空画布
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          <span className="diagram-navbar-title">{doc.name}</span>
+          {!empty && <span className="arch-count-pill">{shapes.length} 个对象</span>}
         </div>
-        {agentOpen && (
-          <div className="diagram-agentlog-body">
-            {agentLog.map((line, i) => (
-              <div className={`diagram-agentlog-line ${line.ok ? 'diagram-agentlog-line--ok' : ''}`} key={i}>
-                <span className="diagram-agentlog-dot">{line.ok ? '●' : '○'}</span>
-                <span>{line.text}</span>
+
+        <div className="diagram-navbar-right">
+          <button type="button" className="diagram-navbar-iconbtn" title="撤销 (Ctrl+Z)" onClick={undo} disabled={!canUndo}>
+            <Undo2 size={17} />
+          </button>
+          <button type="button" className="diagram-navbar-iconbtn" title="重做 (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}>
+            <Redo2 size={17} />
+          </button>
+          <button type="button" className="diagram-navbar-iconbtn" title="缩小" onClick={() => zoomBy(0.85)} disabled={zoom <= 0.1}>
+            <Minus size={16} />
+          </button>
+          <button type="button" className="diagram-navbar-iconbtn" title="放大" onClick={() => zoomBy(1.18)} disabled={zoom >= 3}>
+            <Plus size={16} />
+          </button>
+          <button type="button" className="diagram-navbar-iconbtn" title="100%" onClick={() => zoomAtCenter(1)}>
+            <span className="arch-navzoom-pct">{Math.round(zoom * 100)}%</span>
+          </button>
+          <button type="button" className="diagram-navbar-iconbtn" title="适应视图" onClick={() => fitView()}>
+            <Scan size={16} />
+          </button>
+          <button type="button" className="diagram-navbar-pill" onClick={() => setPanelOpen((v) => !v)}>
+            {panelOpen ? '收起' : '工具栏'}
+          </button>
+          {onNext && (
+            <button type="button" className="diagram-navbar-next" onClick={onNext} disabled={!hasContent} title={hasContent ? '进入第 1 步' : '请先在画布上绘制架构图形'}>
+              下一步 <ArrowRight size={16} />
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* --------------------- agent log (left) --------------------- */}
+      {logOpen ? (
+        <aside className="diagram-agentlog" style={{ top: 68, left: 12 }}>
+          <div className="diagram-agentlog-head" onDoubleClick={() => setLogOpen(false)} title="双击折叠">
+            <div className="diagram-agentlog-dots">
+              <i className="diagram-agentlog-dot-light diagram-agentlog-dot-light--red" />
+              <i className="diagram-agentlog-dot-light diagram-agentlog-dot-light--yellow" />
+              <i className="diagram-agentlog-dot-light diagram-agentlog-dot-light--green" />
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--text-secondary)' }}>运行记录</span>
+            <button type="button" className="diagram-agentlog-close" title="折叠" onClick={() => setLogOpen(false)}>
+              <X size={14} />
+            </button>
+          </div>
+          <div className="diagram-agentlog-body" ref={logRef}>
+            {aiLog.map((line, i) => (
+              <div className={`diagram-agentlog-line diagram-agentlog-line--${line.kind}`} key={i}>
+                <span className="diagram-agentlog-dot">{line.kind === 'err' ? '✕' : line.kind === 'think' ? '✦' : '●'}</span>
+                <span className="diagram-agentlog-text">{line.text}</span>
               </div>
             ))}
           </div>
-        )}
-      </aside>
+          <button type="button" className="diagram-agentlog-foot" onClick={() => setLogOpen(false)}>
+            <AlertTriangle size={14} />
+            <span>运行记录（双击标题折叠）</span>
+          </button>
+        </aside>
+      ) : (
+        <button type="button" className="diagram-agentlog-reopen" title="显示运行记录" onClick={() => setLogOpen(true)}>
+          <MessageSquare size={15} />
+        </button>
+      )}
 
-      {/* Right drawing toolbar */}
-      <aside className="diagram-toolbar">
-        <div className="diagram-toolbar-section">
-          <h3 className="diagram-toolbar-title">模式</h3>
-          <div className="diagram-mode-group">
-            <button
-              className={`diagram-mode-btn ${mode === 'select' ? 'diagram-mode-btn--active' : ''}`}
-              type="button"
-              title="选择：选择并移动节点"
-              onClick={() => setMode('select')}
-            >
-              <MousePointer2 size={15} /> 选择
-            </button>
-            <button
-              className={`diagram-mode-btn ${mode === 'edit' ? 'diagram-mode-btn--active' : ''}`}
-              type="button"
-              title="编辑：点击节点改名 / 拖动把手连线"
-              onClick={() => setMode('edit')}
-            >
-              <PenLine size={15} /> 编辑
-            </button>
-            <button
-              className={`diagram-mode-btn ${mode === 'pan' ? 'diagram-mode-btn--active' : ''}`}
-              type="button"
-              title="平移：拖动画布"
-              onClick={() => setMode('pan')}
-            >
-              <Hand size={15} /> 平移
+      {/* ------------------- right toolbox ------------------- */}
+      {panelOpen && (
+        <aside className="diagram-panel arch-panel arch-panel--tools">
+          <div className="diagram-panel-head">
+            <span className="diagram-panel-title">绘图工具</span>
+            <button type="button" className="diagram-agentlog-close" title="收起面板" onClick={() => setPanelOpen(false)}>
+              <X size={15} />
             </button>
           </div>
-        </div>
+          <div className="diagram-panel-body arch-panel-body">
+            <Toolbox tool={tool} onTool={setTool} onDelete={deleteSelected} canDelete={selCount > 0 && tool === 'select'} />
+          </div>
+        </aside>
+      )}
 
-        <div className="diagram-toolbar-section">
-          <h3 className="diagram-toolbar-title">节点</h3>
-          {PALETTE.map((item) => {
-            const meta = NODE_TYPE_META[item.type];
-            const Icon = meta.icon;
-            return (
-              <button key={item.type} className="diagram-palette-btn" type="button" title={item.hint} onClick={() => addNode(item.type)}>
-                <span className={`diagram-palette-icon diagram-palette-icon--${meta.cls}`}><Icon size={16} /></span>
-                <span className="diagram-palette-label">{meta.label}</span>
-                <span className="diagram-palette-plus">+</span>
-              </button>
-            );
-          })}
+      {/* ------------------------ chat ------------------------ */}
+      <div className="diagram-chat-wrap" style={{ bottom: 16 }}>
+        <div className="diagram-chat-chips">
+          {CHIP_EXAMPLES.map((chip) => (
+            <button key={chip.slice(0, 8)} type="button" className="diagram-chat-chip" onClick={() => setChatText(chip)}>
+              {chip.length > 22 ? `${chip.slice(0, 22)}…` : chip}
+            </button>
+          ))}
         </div>
-
-        <div className="diagram-toolbar-section">
-          <h3 className="diagram-toolbar-title">操作</h3>
-          <button className="diagram-tool-btn" type="button" onClick={handleDeleteSelected} disabled={!selected.nodes.length && !selected.edges.length}>
-            <Trash2 size={15} /> 删除选中
+        <div className="diagram-chat">
+          <MessageSquare size={16} className="diagram-chat-icon" />
+          <input
+            className="diagram-chat-input"
+            placeholder={SUGGEST}
+            value={chatText}
+            onChange={(e) => setChatText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                void handleChatSend();
+              }
+            }}
+            disabled={sending}
+          />
+          <button type="button" className="diagram-chat-send" disabled={sending || !chatText.trim()} onClick={() => void handleChatSend()} title="让 AI 绘制架构草图">
+            {sending ? <Loader2 size={16} className="diagram-chat-spin" /> : <Send size={16} />}
           </button>
-          <button className="diagram-tool-btn" type="button" onClick={handleExport}>
-            <Download size={15} /> 导出 JSON
-          </button>
-          <button className="diagram-tool-btn diagram-tool-btn--danger" type="button" onClick={handleClear}>
-            <Eraser size={15} /> 清空画布
-          </button>
         </div>
-
-        <div className="diagram-toolbar-foot">
-          {nodes.length} 节点 · {edges.length} 连线
-        </div>
-      </aside>
-
-      {/* Bottom AI chat input bar (always visible) */}
-      <div className="diagram-chat">
-        <MessageSquare size={16} className="diagram-chat-icon" />
-        <input
-          className="diagram-chat-input"
-          value={chatText}
-          onChange={(e) => setChatText(e.target.value)}
-          placeholder="向 AI 描述你的结构图…（功能开发中）"
-          onKeyDown={(e) => { if (e.key === 'Enter') setChatText(''); }}
-        />
-        <button className="diagram-chat-send" type="button" disabled title="AI 功能开发中">
-          <Send size={16} />
-        </button>
       </div>
 
-      {menuContent}
-
+      {/* ------------------------ toast ------------------------ */}
       {!notify && toast && <div className="toast toast--visible">{toast}</div>}
     </div>
   );
 }
 
-/** Embeddable diagram work area (ReactFlowProvider included). */
-export function DiagramEmbed({ runId, notify, onStats, onBack, onNext }: DiagramCanvasProps) {
-  return (
-    <ReactFlowProvider>
-      <DiagramCanvas runId={runId} notify={notify} onStats={onStats} onBack={onBack} onNext={onNext} />
-    </ReactFlowProvider>
-  );
+export function DiagramEmbed(props: DiagramEmbedProps) {
+  return <DiagramInner {...props} />;
 }
 
+/** Standalone full-screen page used by the `/diagram/:runId` route. */
 export default function Diagram() {
+  const { runId } = useParams<{ runId?: string }>();
   const navigate = useNavigate();
-  const { runId } = useParams<{ runId: string }>();
-
-  if (!runId) return null;
-
+  const handleNext = useCallback(() => {
+    // 进入 TARA 向导并在后续步骤继续：带 runId 跳 /workspace，落在第 1 步。
+    if (runId) navigate('/workspace', { state: { loadRunId: runId, startAt: 1 } });
+    else navigate('/workspace'); // 无 runId（直输 /diagram/）：回全新向导
+  }, [navigate, runId]);
   return (
     <div className="diagram-page">
-      <DiagramEmbed
+      <DiagramInner
         runId={runId}
+        notify={undefined}
         onBack={() => navigate('/projects')}
-        onNext={() => navigate('/workspace', { state: { loadRunId: runId } })}
+        onNext={handleNext}
       />
     </div>
   );
