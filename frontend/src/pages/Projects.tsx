@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   Clock,
   Download,
   Eye,
@@ -80,9 +81,16 @@ export default function Projects() {
   const [editName, setEditName] = useState('');
   const [editDocument, setEditDocument] = useState('');
   const [saving, setSaving] = useState(false);
+  const [storageDisabled, setStorageDisabled] = useState(false);
 
   useEffect(() => {
     loadProjects();
+    // Warn up front when nothing can be persisted, so an empty list is not
+    // mistaken for "my project disappeared".
+    taraApi
+      .health()
+      .then((h) => setStorageDisabled(h.historyStorage === 'disabled'))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -116,21 +124,6 @@ export default function Projects() {
     navigate('/workspace', { state: { loadRunId: proj.id } });
   }
 
-  function downloadJsonReport(run: RunDetail, proj: ProjectEntry) {
-    const payload = {
-      projectNo: proj.projectNo,
-      projectName: proj.projectName,
-      generatedAt: new Date().toISOString(),
-      run,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const link = window.document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `${(proj.projectName || 'project').replace(/[^a-zA-Z0-9_-]/g, '_')}_report.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  }
-
   async function handleDownloadReport(proj: ProjectEntry) {
     setBusy({ id: proj.id, action: 'download' });
     setError('');
@@ -143,26 +136,14 @@ export default function Projects() {
       const attackPaths = (byStep.get(4)?.attackPaths as AttackPath[]) || [];
       const riskTreatments = (byStep.get(5)?.riskTreatments as RiskTreatment[]) || [];
 
-      let exported = false;
-      if (assets.length || threats.length || attackPaths.length || riskTreatments.length) {
-        try {
-          await taraApi.exportExcel({
-            projectName: proj.projectName,
-            assets,
-            threats,
-            attackPaths,
-            riskTreatments,
-          });
-          exported = true;
-          setToast('Excel 报告已导出');
-        } catch {
-          // fall through to JSON report
-        }
-      }
-      if (!exported) {
-        downloadJsonReport(run, proj);
-        setToast('完整报告已导出 (JSON)');
-      }
+      await taraApi.exportExcel({
+        projectName: proj.projectName,
+        assets,
+        threats,
+        attackPaths,
+        riskTreatments,
+      });
+      setToast('Excel 报告已导出');
     } catch (err) {
       setError(err instanceof Error ? err.message : '下载报告失败');
     } finally {
@@ -239,6 +220,16 @@ export default function Projects() {
       </header>
 
       <main className="page-body page-body--table">
+        {storageDisabled && (
+          <div className="inline-alert inline-alert--warning">
+            <AlertTriangle size={16} />
+            <span>
+              数据库未配置，新建的项目不会被保存。请在项目根目录的 <code>.env</code> 中设置
+              <code> DATABASE_URL</code> 并重启后端。
+            </span>
+          </div>
+        )}
+
         {error && (
           <div className="inline-alert">
             <span>{error}</span>

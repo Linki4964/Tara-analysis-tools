@@ -1,180 +1,106 @@
 # TARA Analysis Tools
 
-面向汽车网络安全 TARA（Threat Analysis and Risk Assessment）的分析平台，支持从需求/系统文档中提取相关项定义，并按 ISO/SAE 21434 工作流完成资产识别、威胁分析、攻击路径分析和风险处置方案生成。
+面向汽车网络安全的 TARA（Threat Analysis and Risk Assessment）分析平台，覆盖相关项定义、资产识别、威胁分析、攻击路径和风险处置流程。
+
+## 功能
+
+- 从 DOCX、PDF、XLSX、CSV、JSON、Markdown 和文本文件提取内容
+- 按 ISO/SAE 21434 工作流生成并维护 TARA 分析结果
+- 基于 STRIDE 构建威胁场景和攻击路径
+- 计算影响等级、攻击可行性和风险处置建议
+- 管理资产、漏洞、法规、攻击路径、黄金案例及纠偏规则
+- 使用 PostgreSQL、pgvector 与本地 BGE 模型进行混合检索
+- AI 解析非标准资产清单，经人工确认后批量入库
+- 保存分析历史并导出 Excel/JSON
 
 ## 技术栈
 
-- 前端：React + TypeScript + Vite
-- 后端：Python + FastAPI
-- 数据库：PostgreSQL，用于保存每次完整 TARA 运行历史
-- 业务内核：`tara_core` Python 模块
-- AI Provider：DeepSeek 或 Anthropic，可通过环境变量切换
+- 前端：React、TypeScript、Vite
+- 后端：FastAPI、Python
+- 数据库：PostgreSQL、pgvector
+- 向量模型：`bge-small-zh-v1.5`
+- AI：支持 Anthropic、OpenAI、DeepSeek 及 OpenAI 兼容的本地服务
+
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+pip install -r requirements.txt
+npm install
+```
+
+### 2. 准备 PostgreSQL
+
+安装 PostgreSQL 和 [pgvector](https://github.com/pgvector/pgvector)，然后在项目数据库中启用扩展：
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+### 3. 配置环境
+
+复制 `.env.example` 为 `.env`，按需设置：
+
+```env
+DATABASE_URL=<postgresql-connection-string>
+RAG_EMBEDDING_MODEL=<local-bge-model-directory>
+API_PROVIDER=<provider-name>
+```
+
+API 密钥仅保存在本地 `.env` 或通过设置页面配置。不要将 `.env` 提交到版本库。
+
+### 4. 启动
+
+```bash
+npm run dev:backend
+npm run dev:frontend
+```
+
+前后端需分别在两个终端中运行。
+
+## RAG
+
+RAG 模块位于 `backend/rag/`，包括：
+
+- 本地 BGE Embedding
+- 七类领域知识库
+- 文档分类与定向入库
+- 向量与关键词混合检索
+- PostgreSQL/pgvector 存储边界
+
+详细说明见 `backend/rag/README.md`。
+
+旧向量库切换到 BGE 后，可执行：
+
+```bash
+python scripts/migrate_rag_to_bge.py
+```
+
+迁移前请备份数据库。
 
 ## 项目结构
 
 ```text
-.
-├── frontend/              # React + TypeScript 前端应用
-│   ├── src/api/           # API 客户端封装
-│   ├── src/components/    # 可复用 UI 组件
-│   ├── src/types/         # TARA 领域类型定义
-│   └── src/App.tsx        # 五步 TARA 工作台主流程
-├── backend/               # FastAPI 后端
-│   ├── api/               # HTTP 路由
-│   ├── core/              # 后端配置
-│   ├── services/          # 文件解析等后端服务
-│   └── main.py            # FastAPI 应用入口
-├── tara_core/             # 核心业务模块
-│   ├── prompts/           # 独立提示词模板
-│   ├── services.py        # TARA 工作流业务逻辑
-│   ├── llm.py             # LLM 调用适配
-│   └── json_utils.py      # AI JSON 响应清洗
-├── docx_to_json.py        # DOCX 转 JSON CLI 辅助脚本
-├── scripts/               # 数据库初始化脚本
-├── requirements.txt       # Python 依赖
-├── package.json           # 前端/后端开发脚本
-└── .env.example           # 环境变量示例
+backend/       FastAPI 接口、服务与 RAG
+frontend/      React 前端
+tara_core/     TARA 业务逻辑、提示词与 AI 适配
+scripts/       数据库初始化、迁移与验证脚本
+rules/         TARA 分析规则
 ```
 
-## 功能流程
-
-1. 相关项定义：上传 `.docx`、`.pdf`、`.txt`、`.json`、`.md`、`.csv` 文档，或手动输入系统描述。
-2. 资产识别：识别系统中需要保护的 Data、Software、ECU、Key、Service 等资产。
-3. 威胁分析：基于 STRIDE 模型分析资产面临的威胁和损害场景。
-4. 攻击路径：从攻击者视角构建攻击入口、步骤、能力要求和可行性。
-5. 风险处置：生成安全控制措施、处置决策、优先级、残余风险和验证方法。
-
-## 环境准备
-
-### 1. Python 依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Node 依赖
-
-```bash
-npm install
-```
-
-### 3. 配置环境变量
-
-复制示例文件并填写密钥：
-
-```bash
-cp .env.example .env
-```
-
-常用配置：
-
-```env
-API_PROVIDER=auto
-
-DEEPSEEK_API_KEY=your-deepseek-api-key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
-
-ANTHROPIC_API_KEY=your-anthropic-api-key
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-
-CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-
-DATABASE_URL=postgresql://postgres:your-postgres-password@localhost:5433/tara_analysis
-```
-
-### 4. 初始化 PostgreSQL
-
-项目默认使用本地 PostgreSQL 保存历史记录。初始化数据库：
-
-```powershell
-$env:PGPASSWORD="your-postgres-password"
-.\scripts\init_database.ps1 -Port 5433 -User postgres -Database tara_analysis
-```
-
-如果不想通过环境变量传密码，也可以直接运行脚本后按提示输入密码。脚本会自动创建 `tara_analysis` 数据库，并执行 `scripts/init_database.sql` 创建 `runs` 与 `step_results` 表。
-
-如果 PostgreSQL 客户端命令 `psql` 没有加入 PATH，也可以直接使用 Python 初始化：
-
-```powershell
-python .\scripts\init_database.py --host localhost --port 5433 --user postgres --password your-postgres-password --database tara_analysis
-```
-
-## 启动开发环境
-
-### 启动后端
-
-```bash
-npm run dev:backend
-```
-
-后端地址：
-
-```text
-http://localhost:8000
-```
-
-健康检查：
-
-```text
-http://localhost:8000/api/health
-```
-
-### 启动前端
-
-```bash
-npm run dev:frontend
-```
-
-前端地址：
-
-```text
-http://localhost:5173
-```
-
-Vite 开发服务器会将 `/api` 请求代理到 `http://localhost:8000`。
-
-## 构建前端
+## 构建
 
 ```bash
 npm run build:frontend
 ```
 
-构建产物位于：
+## 安全提示
 
-```text
-frontend/dist/
-```
+- 不要提交 `.env`、API 密钥、数据库密码或生产数据。
+- 上传的文档可能包含敏感设计信息，请根据组织的数据安全要求部署。
+- AI 生成的分析结果应由具备资质的工程师审核，不应直接作为合规结论。
 
-## API 概览
+## License
 
-所有接口以 `/api` 为前缀：
-
-- `GET /api/health`
-- `POST /api/upload-extract`
-- `POST /api/structure-docx`
-- `POST /api/extract-item-definition`
-- `POST /api/generate-assets`
-- `POST /api/analyze-threats`
-- `POST /api/generate-attack-paths`
-- `POST /api/generate-risk-treatment`
-- `GET /api/runs`
-- `GET /api/runs/{run_id}`
-- `POST /api/runs`
-- `POST /api/runs/{run_id}/complete`
-- `DELETE /api/runs/{run_id}`
-
-运行中的每个分析项目会在 PostgreSQL 中保存项目记录和各步骤结果。前端首页和历史页可查看、恢复和删除历史记录。
-
-## 可维护性说明
-
-- 前端 API 调用集中在 `frontend/src/api/`，便于替换后端地址或统一错误处理。
-- 前端领域类型集中在 `frontend/src/types/tara.ts`，避免组件间重复定义结构。
-- 后端 HTTP 路由集中在 `backend/api/routes.py`，文件解析等基础服务放在 `backend/services/`。
-- TARA 核心业务与提示词放在 `tara_core/`，不绑定 FastAPI，可被 CLI、测试或其他后端复用。
-- 提示词按分析阶段拆分到 `tara_core/prompts/`，后续调整分析口径不需要改动 Web 层。
-
-## 备注
-
-旧版 `public/` 静态前端和 Node 静态服务器已移除。当前唯一前端入口是 `frontend/` 下的 React + TypeScript 应用。
-
+提交公开仓库前，请根据项目使用场景补充合适的开源许可证。

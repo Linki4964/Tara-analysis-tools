@@ -5,3 +5,4 @@ pypdf
 asyncpg
 openpyxl
 python-docx
+sentence-transformers>=2.7,<4

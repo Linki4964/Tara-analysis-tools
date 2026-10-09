@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 
 class ApiConfigRequest(BaseModel):
-    provider: Literal["auto", "anthropic", "deepseek", "local"] = "auto"
+    provider: Literal["auto", "anthropic", "openai", "deepseek", "local"] = "auto"
     api_key: str = ""
     model: Optional[str] = None
     base_url: Optional[str] = None

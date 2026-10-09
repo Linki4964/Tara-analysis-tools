@@ -202,13 +202,24 @@ export type Health = {
   historyStorage?: 'enabled' | 'disabled';
 };
 
-export type ApiProvider = 'auto' | 'anthropic' | 'deepseek' | 'local';
+export type ApiProvider = 'auto' | 'anthropic' | 'openai' | 'deepseek' | 'local';
 
 export type ApiConfig = {
   provider: ApiProvider;
   api_key: string;
   model: string;
   base_url: string;
+  apiKeyIsPlaceholder?: boolean;
+};
+
+export type ProviderSpec = {
+  name: Exclude<ApiProvider, 'auto'>;
+  label: string;
+  defaultModel: string;
+  defaultBaseUrl: string;
+  requiresKey: boolean;
+  allowsCustomBaseUrl: boolean;
+  apiStyle: 'anthropic' | 'openai';
 };
 
 export type SavedConfig = {
@@ -217,6 +228,7 @@ export type SavedConfig = {
   model: string;
   base_url: string;
   api_key: string;
+  apiKeyIsPlaceholder?: boolean;
   active: boolean;
 };
 

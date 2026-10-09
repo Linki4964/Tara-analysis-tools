@@ -1,8 +1,16 @@
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from .providers import (
+    detect_provider_from_key,
+    get_spec,
+    is_placeholder_key,
+    mask_key,
+    normalize_base_url,
+)
 
 
 # ---- Runtime overrides (set via API by the frontend) ----
@@ -47,6 +55,8 @@ class ProviderInfo:
     model: str
     base_url: str
     api_key: str
+    # "anthropic" or "openai" - tells the caller which wire protocol to speak.
+    api_style: str = "openai"
 
 
 def set_runtime_config(provider: str, api_key: str, model: str = "", base_url: str = "") -> None:
@@ -63,38 +73,51 @@ def clear_runtime_config() -> None:
     _runtime_config.clear()
 
 
+def get_current_api_key() -> str:
+    """Return the unmasked runtime API key (server-side use only).
+
+    Never expose this to clients; ``get_runtime_config`` masks it for display.
+    """
+    return _runtime_config.get("api_key", "")
+
+
 def get_runtime_config() -> dict:
     """Return a copy of the current runtime config (key masked)."""
     if not _runtime_config:
         return {}
     cfg = dict(_runtime_config)
     key = cfg.get("api_key", "")
-    cfg["api_key"] = _mask_key(key)
+    cfg["api_key"] = mask_key(key)
+    # Surface whether the stored key looks like an unfilled template so the UI
+    # can warn instead of failing later with a confusing 401.
+    cfg["apiKeyIsPlaceholder"] = is_placeholder_key(key)
     return cfg
 
 
 def _mask_key(key: str) -> str:
-    if len(key) <= 8:
-        return "*" * len(key)
-    return key[:4] + "*" * (len(key) - 8) + key[-4:]
+    """Backwards-compatible alias for the shared masking helper."""
+    return mask_key(key)
 
 
 # ---- Saved named configs CRUD ----
 
+def _serialize_saved(name: str, cfg: dict) -> dict:
+    """Shared shape for a saved-config entry returned to the frontend."""
+    return {
+        "name": name,
+        "provider": cfg.get("provider", "auto"),
+        "model": cfg.get("model", ""),
+        "base_url": cfg.get("base_url", ""),
+        "api_key": mask_key(cfg.get("api_key", "")),
+        "apiKeyIsPlaceholder": is_placeholder_key(cfg.get("api_key", "")),
+        "active": _is_active(cfg),
+    }
+
+
 def list_saved_configs() -> list[dict]:
     """Return all saved configs with masked keys, plus the current one if active."""
     _init_configs_store()
-    result: list[dict] = []
-    for name, cfg in _saved_configs.items():
-        result.append({
-            "name": name,
-            "provider": cfg.get("provider", "auto"),
-            "model": cfg.get("model", ""),
-            "base_url": cfg.get("base_url", ""),
-            "api_key": _mask_key(cfg.get("api_key", "")),
-            "active": _is_active(cfg),
-        })
-    return result
+    return [_serialize_saved(name, cfg) for name, cfg in _saved_configs.items()]
 
 
 def save_current_config(name: str) -> dict | None:
@@ -104,13 +127,7 @@ def save_current_config(name: str) -> dict | None:
     _init_configs_store()
     _saved_configs[name] = dict(_runtime_config)
     _persist_saved_configs()
-    return {
-        "name": name,
-        "provider": _runtime_config["provider"],
-        "model": _runtime_config.get("model", ""),
-        "base_url": _runtime_config.get("base_url", ""),
-        "api_key": _mask_key(_runtime_config["api_key"]),
-    }
+    return _serialize_saved(name, _runtime_config)
 
 
 def delete_saved_config(name: str) -> bool:
@@ -131,13 +148,7 @@ def activate_saved_config(name: str) -> dict | None:
         return None
     _runtime_config.clear()
     _runtime_config.update(cfg)
-    return {
-        "name": name,
-        "provider": cfg["provider"],
-        "model": cfg.get("model", ""),
-        "base_url": cfg.get("base_url", ""),
-        "api_key": _mask_key(cfg["api_key"]),
-    }
+    return _serialize_saved(name, cfg)
 
 
 def _is_active(cfg: dict) -> bool:
@@ -166,85 +177,136 @@ def load_env_file() -> None:
 
 
 def _detect_provider_from_key(api_key: str) -> str:
-    """Guess the provider from the API key prefix."""
-    if not api_key:
+    """Guess the provider from the API key prefix.
+
+    Returns "none" when the key is absent, a template placeholder, or a format
+    we genuinely cannot attribute to one provider.
+    """
+    if not api_key or is_placeholder_key(api_key):
         return "none"
-    if api_key.startswith("sk-ant-"):
-        return "anthropic"
-    if api_key.startswith("sk-"):
-        return "deepseek"  # OpenAI-compatible (DeepSeek, OpenAI, etc.)
-    return "deepseek"  # assume OpenAI-compatible for unknown formats
+    return detect_provider_from_key(api_key) or "none"
+
+
+def _build_info(provider: str, api_key: str, model: str, base_url: str) -> ProviderInfo:
+    """Assemble a resolved ProviderInfo, filling in provider defaults."""
+    spec = get_spec(provider)
+    return ProviderInfo(
+        provider=spec.name,
+        model=(model or "").strip() or spec.default_model,
+        base_url=normalize_base_url(base_url, spec.name),
+        # Local servers usually need no key, but some gateways expect any
+        # non-empty string; "ollama" is the conventional placeholder.
+        api_key=api_key or ("" if spec.requires_key else "ollama"),
+        api_style=spec.api_style,
+    )
+
+
+def build_provider_info(provider: str, api_key: str, model: str = "", base_url: str = "") -> ProviderInfo:
+    """Resolve an explicit, unsaved configuration for connection testing."""
+    selected = (provider or "").strip().lower()
+    if selected not in ("anthropic", "openai", "deepseek", "local"):
+        raise ValueError("Please select a model provider before testing.")
+    spec = get_spec(selected)
+    if spec.requires_key and not api_key:
+        raise ValueError("API Key is required for this provider.")
+    return _build_info(selected, api_key, model, base_url)
 
 
 def resolve_provider() -> Optional[ProviderInfo]:
+    """Resolve the effective provider from runtime config, then .env."""
     # 1) Runtime config takes priority
     if _runtime_config:
-        provider = _runtime_config["provider"]
-        api_key = _runtime_config["api_key"]
-        model = _runtime_config["model"]
-        base_url = _runtime_config["base_url"]
+        provider = (_runtime_config.get("provider") or "auto").strip().lower()
+        api_key = _runtime_config.get("api_key", "")
+        model = _runtime_config.get("model", "")
+        base_url = _runtime_config.get("base_url", "")
 
-        # "auto" — detect from key prefix
+        # "auto" - detect from the key prefix, then fall back to whichever
+        # provider the user configured in .env.
         if provider == "auto":
             provider = _detect_provider_from_key(api_key)
+            if provider == "none":
+                env_provider = os.getenv("API_PROVIDER", "").strip().lower()
+                if env_provider in ("anthropic", "openai", "deepseek", "local"):
+                    provider = env_provider
+                elif api_key:
+                    # We hold a real but unrecognisable key. Rather than guess
+                    # wrong and send the user's key to the wrong vendor, report
+                    # nothing configured and let them pick a provider.
+                    return None
+                else:
+                    provider = "local"
 
         if provider == "none":
             return None
 
-        if provider == "local":
-            return ProviderInfo(
-                provider="local",
-                model=model or "llama3",
-                base_url=base_url or "http://localhost:11434/v1",
-                api_key=api_key or "ollama",
-            )
-
-        if provider == "deepseek":
-            return ProviderInfo(
-                provider="deepseek",
-                model=model or "deepseek-chat",
-                base_url=base_url or "https://api.deepseek.com",
-                api_key=api_key,
-            )
-
-        if provider == "anthropic":
-            return ProviderInfo(
-                provider="anthropic",
-                model=model or "claude-sonnet-4-20250514",
-                base_url="https://api.anthropic.com",
-                api_key=api_key,
-            )
+        spec = get_spec(provider)
+        if spec.requires_key and not api_key:
+            return None
+        return _build_info(provider, api_key, model, base_url)
 
     # 2) Fall back to .env
     load_env_file()
-    provider = os.getenv("API_PROVIDER", "auto")
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+
+    def env_key(*names: str) -> str:
+        for name in names:
+            value = (os.getenv(name) or "").strip()
+            if value and not is_placeholder_key(value):
+                return value
+        return ""
+
+    anthropic_key = env_key("ANTHROPIC_API_KEY")
+    openai_key = env_key("OPENAI_API_KEY")
+    deepseek_key = env_key("DEEPSEEK_API_KEY")
+
+    provider = (os.getenv("API_PROVIDER") or "auto").strip().lower()
+
+    if provider not in ("anthropic", "openai", "deepseek", "local"):
+        # Auto-detect. Template keys were already filtered out above, so a
+        # present key means the user really configured that provider.
+        if anthropic_key:
+            provider = "anthropic"
+        elif openai_key:
+            provider = "openai"
+        elif deepseek_key:
+            provider = "deepseek"
+        else:
+            return None
 
     if provider == "anthropic":
-        selected = "anthropic"
-    elif provider == "deepseek":
-        selected = "deepseek"
-    elif anthropic_key.startswith("sk-ant-"):
-        selected = "anthropic"
-    elif deepseek_key:
-        selected = "deepseek"
-    elif anthropic_key:
-        selected = "anthropic"
-    else:
-        return None
-
-    if selected == "deepseek":
-        return ProviderInfo(
-            provider="deepseek",
-            model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-            base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-            api_key=deepseek_key,
+        if not anthropic_key:
+            return None
+        return _build_info(
+            "anthropic",
+            anthropic_key,
+            os.getenv("ANTHROPIC_MODEL", ""),
+            os.getenv("ANTHROPIC_BASE_URL", ""),
         )
 
-    return ProviderInfo(
-        provider="anthropic",
-        model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-        base_url="https://api.anthropic.com",
-        api_key=anthropic_key,
+    if provider == "openai":
+        if not openai_key:
+            return None
+        return _build_info(
+            "openai",
+            openai_key,
+            os.getenv("OPENAI_MODEL", ""),
+            os.getenv("OPENAI_BASE_URL", ""),
+        )
+
+    if provider == "deepseek":
+        if not deepseek_key:
+            return None
+        return _build_info(
+            "deepseek",
+            deepseek_key,
+            os.getenv("DEEPSEEK_MODEL", ""),
+            os.getenv("DEEPSEEK_BASE_URL", ""),
+        )
+
+    # Local model: no key required.
+    return _build_info(
+        "local",
+        "",
+        os.getenv("LOCAL_MODEL", ""),
+        os.getenv("LOCAL_BASE_URL", ""),
     )

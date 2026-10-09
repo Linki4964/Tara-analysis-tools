@@ -1,65 +1,38 @@
-import { BookOpen, BookOpenCheck, Database, FileSearch, GraduationCap, Layers, ShieldAlert } from 'lucide-react';
-
-const KNOWLEDGE_MODULES = [
-  {
-    title: '威胁情报库',
-    desc: '沉淀 STRIDE 威胁模式与典型损害场景，快速复用已验证的威胁分析结论。',
-    icon: ShieldAlert,
-  },
-  {
-    title: '资产模板库',
-    desc: '面向常见 ECU、网关、云端服务等系统形态的资产与安全属性模板。',
-    icon: Database,
-  },
-  {
-    title: '标准与法规',
-    desc: 'ISO/SAE 21434、UN R155 等法规条款与要求的索引与速查。',
-    icon: BookOpenCheck,
-  },
-  {
-    title: '分析经验库',
-    desc: '保存优秀分析案例、攻击路径与处置方案的沉淀，供团队共享学习。',
-    icon: GraduationCap,
-  },
-];
-
-export default function Knowledge() {
-  return (
-    <div className="page-shell">
-      <header className="page-header">
-        <div className="page-header-left">
-          <h1 className="page-title">知识管理</h1>
-          <span className="page-subtitle">集中管理威胁情报、资产模板与标准法规等分析知识</span>
-        </div>
-        <span className="page-badge page-badge--wip">规划中</span>
-      </header>
-
-      <main className="page-body">
-        <div className="coming-soon">
-          <BookOpen size={40} className="coming-soon-icon" />
-          <h2>知识库功能正在建设中</h2>
-          <p>后续版本将支持威胁情报、资产模板、标准法规与分析经验的统一管理与检索。</p>
-        </div>
-
-        <div className="module-grid">
-          {KNOWLEDGE_MODULES.map((mod) => {
-            const Icon = mod.icon;
-            return (
-              <div className="module-card" key={mod.title}>
-                <span className="module-card-icon"><Icon size={22} /></span>
-                <h3 className="module-card-title">{mod.title}</h3>
-                <p className="module-card-desc">{mod.desc}</p>
-                <span className="module-card-tag">即将上线</span>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="knowledge-note">
-          <Layers size={16} />
-          <span>知识库数据将通过后端服务持久化，并可在 TARA 分析流程中作为上下文自动引用。</span>
-        </div>
-      </main>
-    </div>
-  );
+import { useEffect, useRef, useState } from 'react';
+import { BarChart3, CheckCircle2, Database, FileUp, Loader2, Plus, RefreshCw, Search, Sparkles, Trash2, X } from 'lucide-react';
+import { taraApi } from '../api/taraApi';
+type Item = Record<string, unknown>;
+const LIBS = [['assets','资产模板'],['damages','损害与危害'],['threats','威胁与漏洞'],['attack-paths','攻击路径'],['regulations','法规标准'],['golden-cases','黄金案例'],['corrections','纠偏规则']] as const;
+const EMPTY: Record<string, Item> = {
+ assets:{component_name:'',asset_type:'Sw',asset_name:'',standard_function_desc:'',common_interfaces:[]},
+ damages:{applicable_asset_type:'Sw',security_attribute:'Integrity',driving_state:'ALL',damage_scenario_template:'',impact_level:'Moderate'},
+ threats:{source_type:'STRIDE_PATTERN',stride_category:'Tampering',target_component:'',threat_description_template:'',attack_technique:''},
+ 'attack-paths':{attack_surface:'',attack_chain_steps:'',feasibility_al:'Medium'},
+ regulations:{standard_name:'',clause_no:'',requirement_type:'MANDATORY',clause_content:'',mitigation_suggestion:''},
+ 'golden-cases':{project_item:'',asset_name:'',damage_scenario:'',threat_scenario:'',attack_path:''},
+ corrections:{tara_step:1,target_component:'',original_ai_content:'',human_corrected_content:'',derived_rule:''}
+};
+export default function Knowledge(){
+ const [lib,setLib]=useState('assets'),[items,setItems]=useState<Item[]>([]),[query,setQuery]=useState(''),[busy,setBusy]=useState(''),[message,setMessage]=useState(''),[editing,setEditing]=useState<Item|null>(null),[json,setJson]=useState('');
+ const [overview,setOverview]=useState<{total:number;byType:Record<string,number>;topComponents:[string,number][];topInterfaces:[string,number][]}|null>(null),[preview,setPreview]=useState<Item[]|null>(null),[warnings,setWarnings]=useState<string[]>([]);
+ const fileRef=useRef<HTMLInputElement>(null),aiFileRef=useRef<HTMLInputElement>(null);
+ async function load(q=query){setBusy('加载中');setMessage('');try{setItems((await taraApi.listKnowledge(lib,q)).items);if(lib==='assets')setOverview(await taraApi.assetOverview())}catch(e){setMessage(err(e))}finally{setBusy('')}}
+ useEffect(()=>{void load('')},[lib]);
+ function edit(item?:Item){const value=item||EMPTY[lib];setEditing(item||{});setJson(JSON.stringify(value,null,2))}
+ async function save(){try{setBusy('保存中');const value=JSON.parse(json) as Item;if(editing?.id)await taraApi.updateKnowledge(lib,String(editing.id),value);else await taraApi.createKnowledge(lib,value);setEditing(null);await load();setMessage('知识条目已保存')}catch(e){setMessage(err(e))}finally{setBusy('')}}
+ async function remove(item:Item){if(!confirm('确定删除这条知识吗？'))return;try{await taraApi.deleteKnowledge(lib,String(item.id));await load()}catch(e){setMessage(err(e))}}
+ async function ingest(file:File){setBusy('解析并入库中');try{const r=await taraApi.ingestKnowledge(file,lib);setMessage(`已导入 ${r.chunkCount} 条${r.duplicate?'（重复文件）':''}`);await load()}catch(e){setMessage(err(e))}finally{setBusy('');if(fileRef.current)fileRef.current.value=''}}
+ async function aiParse(file:File){setBusy('AI 正在识别字段并重新分类');setMessage('');try{const r=await taraApi.previewAssetImport(file);setPreview(r.assets);setWarnings(r.warnings)}catch(e){setMessage(err(e))}finally{setBusy('');if(aiFileRef.current)aiFileRef.current.value=''}}
+ async function confirmImport(){if(!preview)return;setBusy('批量写入资产库');try{const r=await taraApi.confirmAssetImport(preview);setPreview(null);setMessage(`成功导入 ${r.created} 个标准化资产`);await load()}catch(e){setMessage(err(e))}finally{setBusy('')}}
+ function patchPreview(index:number,key:string,value:unknown){setPreview(current=>current?.map((item,i)=>i===index?{...item,[key]:value}:item)||null)}
+ async function search(){if(!query.trim())return load('');setBusy('混合检索中');try{setItems((await taraApi.searchKnowledge(lib,query)).items)}catch(e){setMessage(err(e))}finally{setBusy('')}}
+ return <div className="page-shell"><header className="page-header"><div className="page-header-left"><h1 className="page-title">RAG 知识管理</h1><span className="page-subtitle">按 TARA 阶段维护、导入并验证检索数据</span></div><span className="page-badge">{lib==='assets'&&overview?overview.total:items.length} 条</span></header><main className="page-body knowledge-manager">
+  <div className="kb-tabs">{LIBS.map(([k,l])=><button key={k} className={lib===k?'active':''} onClick={()=>{setLib(k);setQuery('')}}>{l}</button>)}</div>
+  {lib==='assets'&&overview&&<section className="asset-overview"><div className="asset-total"><BarChart3/><span>资产总数</span><strong>{overview.total}</strong></div>{Object.entries({Da:'数据流',Hw:'硬件',Sw:'软件',Ee:'外部实体',Dt:'数据'}).map(([key,label])=><div className={`asset-stat asset-stat-${key}`} key={key}><span>{label}</span><strong>{overview.byType[key]||0}</strong><small>{overview.total?Math.round((overview.byType[key]||0)/overview.total*100):0}%</small></div>)}<div className="asset-rank"><b>主要组件</b><span>{overview.topComponents.slice(0,5).map(([n,c])=>`${n} ${c}`).join(' · ')||'暂无'}</span></div><div className="asset-rank"><b>常用接口</b><span>{overview.topInterfaces.slice(0,5).map(([n,c])=>`${n} ${c}`).join(' · ')||'暂无'}</span></div></section>}
+  <section className="kb-toolbar"><div className="kb-search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==='Enter'&&void search()} placeholder="输入语义或关键词"/><button onClick={()=>void search()}>混合检索</button></div><input ref={fileRef} hidden type="file" accept=".pdf,.docx,.xlsx,.txt,.json,.md,.csv" onChange={e=>e.target.files?.[0]&&void ingest(e.target.files[0])}/>{lib==='assets'&&<><input ref={aiFileRef} hidden type="file" accept=".pdf,.docx,.xlsx,.txt,.json,.md,.csv" onChange={e=>e.target.files?.[0]&&void aiParse(e.target.files[0])}/><button className="kb-btn kb-btn-ai" onClick={()=>aiFileRef.current?.click()}><Sparkles size={16}/>AI 解析资产</button></>}<button className="kb-btn" onClick={()=>fileRef.current?.click()}><FileUp size={16}/>普通导入</button><button className="kb-btn kb-btn-primary" onClick={()=>edit()}><Plus size={16}/>新建</button><button className="kb-icon-btn" onClick={()=>void load()}><RefreshCw size={17}/></button></section>
+  {message&&<div className="kb-message">{message}</div>}{busy?<div className="kb-loading"><Loader2 className="spin"/> {busy}</div>:<div className="kb-grid">{items.map(item=><article className="kb-card" key={String(item.id)}><div className="kb-card-head"><Database size={18}/><strong>{title(item)}</strong><button onClick={()=>void remove(item)}><Trash2 size={15}/></button></div><p>{summary(item)}</p><div className="kb-card-foot"><span>{String(item.source_type||item.asset_type||item.requirement_type||item.stride_category||'知识')}</span><button onClick={()=>edit(item)}>编辑</button>{item.relevance!=null&&<em>{(Number(item.relevance)*100).toFixed(1)}%</em>}</div></article>)}{!items.length&&<div className="kb-empty">暂无数据，可新建条目或导入文档。</div>}</div>}
+ </main>{editing&&<div className="kb-modal-backdrop"><div className="kb-modal"><header><div><h2>{editing.id?'编辑':'新建'}知识条目</h2><p>使用结构化 JSON 管理全部领域字段</p></div><button onClick={()=>setEditing(null)}><X/></button></header><textarea value={json} onChange={e=>setJson(e.target.value)} spellCheck={false}/><footer><button className="kb-btn" onClick={()=>setEditing(null)}>取消</button><button className="kb-btn kb-btn-primary" onClick={()=>void save()}>保存并生成向量</button></footer></div></div>}{preview&&<div className="kb-modal-backdrop"><div className="asset-import-modal"><header><div><h2><Sparkles/> AI 资产解析预览</h2><p>AI 已按统一标准重新分类。请检查、修改并勾选要入库的资产。</p></div><button onClick={()=>setPreview(null)}><X/></button></header>{warnings.length>0&&<div className="import-warnings">{warnings.join('；')}</div>}<div className="asset-preview-table"><table><thead><tr><th>导入</th><th>原始名称</th><th>标准名称</th><th>组件</th><th>分类</th><th>置信度</th><th>分类依据</th></tr></thead><tbody>{preview.map((a,i)=><tr key={i}><td><input type="checkbox" checked={a.selected!==false} onChange={e=>patchPreview(i,'selected',e.target.checked)}/></td><td>{String(a.source_name||'-')}</td><td><input value={String(a.asset_name||'')} onChange={e=>patchPreview(i,'asset_name',e.target.value)}/></td><td><input value={String(a.component_name||'')} onChange={e=>patchPreview(i,'component_name',e.target.value)}/></td><td><select value={String(a.asset_type||'Sw')} onChange={e=>patchPreview(i,'asset_type',e.target.value)}><option value="Da">Da 数据流</option><option value="Hw">Hw 硬件</option><option value="Sw">Sw 软件</option><option value="Ee">Ee 外部实体</option><option value="Dt">Dt 数据</option></select></td><td><span className={`confidence ${Number(a.confidence)>=.8?'high':Number(a.confidence)>=.6?'mid':'low'}`}>{Math.round(Number(a.confidence||0)*100)}%</span></td><td>{String(a.reason||'')}</td></tr>)}</tbody></table></div><footer><span>已选择 {preview.filter(a=>a.selected!==false).length}/{preview.length} 项</span><button className="kb-btn" onClick={()=>setPreview(null)}>取消</button><button className="kb-btn kb-btn-primary" onClick={()=>void confirmImport()}><CheckCircle2 size={16}/>确认入库</button></footer></div></div>}</div>
 }
+function title(i:Item){return String(i.asset_name||i.damage_scenario_template||i.cve_id||i.attack_surface||i.clause_no||i.project_item||i.derived_rule||'未命名条目')}
+function summary(i:Item){return String(i.standard_function_desc||i.damage_scenario_template||i.threat_description_template||i.attack_chain_steps||i.clause_content||i.threat_scenario||i.derived_rule||'').slice(0,220)}
+function err(e:unknown){return e instanceof Error?e.message:'操作失败'}

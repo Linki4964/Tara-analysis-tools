@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 from fastapi import HTTPException, UploadFile
 
 
-ALLOWED_EXTENSIONS = {".docx", ".pdf", ".txt", ".json", ".md", ".csv"}
+ALLOWED_EXTENSIONS = {".docx", ".pdf", ".xlsx", ".xls", ".txt", ".json", ".md", ".csv"}
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
@@ -34,6 +34,8 @@ async def extract_upload(file: UploadFile) -> dict[str, Any]:
         extracted_html = extracted["html"]
     elif ext == ".pdf":
         extracted_text = _extract_pdf(content)
+    elif ext in {".xlsx", ".xls"}:
+        extracted_text = _extract_excel(content, ext)
     else:
         extracted_text = content.decode("utf-8", errors="replace")
 
@@ -115,7 +117,6 @@ def _extract_pdf(content: bytes) -> str:
             status_code=500,
             detail="PDF extraction requires pypdf. Please install backend dependencies from requirements.txt.",
         ) from error
-
     try:
         reader = PdfReader(io.BytesIO(content))
         return "\n".join(page.extract_text() or "" for page in reader.pages)
@@ -124,3 +125,24 @@ def _extract_pdf(content: bytes) -> str:
             status_code=400,
             detail="Failed to parse PDF. The file may be encrypted, scanned, or corrupted.",
         ) from error
+
+
+def _extract_excel(content: bytes, ext: str) -> str:
+    if ext == ".xls":
+        raise HTTPException(status_code=400, detail="旧版 .xls 暂不支持，请另存为 .xlsx 或 CSV 后上传。")
+    try:
+        from openpyxl import load_workbook
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        lines: list[str] = []
+        for sheet in workbook.worksheets:
+            lines.append(f"## Sheet: {sheet.title}")
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(value).strip() if value is not None else "" for value in row]
+                if any(values):
+                    lines.append(" | ".join(values))
+        return "\n".join(lines)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {error}") from error
+

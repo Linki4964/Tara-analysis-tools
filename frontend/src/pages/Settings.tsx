@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Check,
   Eye,
   EyeOff,
   Loader2,
+  PlugZap,
   Plus,
   Save,
   Settings as SettingsIcon,
@@ -12,64 +13,90 @@ import {
   X,
 } from 'lucide-react';
 import { taraApi } from '../api/taraApi';
-import type { ApiProvider, Health, SavedConfig } from '../types/tara';
+import type { ApiProvider, Health, ProviderSpec, SavedConfig } from '../types/tara';
 
-function detectProvider(key: string): { provider: ApiProvider; label: string } {
-  const trimmed = key.trim();
-  if (!trimmed) {
-    return { provider: 'local', label: '未输入 Key — 将使用本地模型' };
-  }
-  if (trimmed.startsWith('sk-ant-')) {
-    return { provider: 'anthropic', label: '已识别: Anthropic (Claude)' };
-  }
-  if (trimmed.startsWith('sk-')) {
-    return { provider: 'deepseek', label: '已识别: OpenAI 兼容 (DeepSeek 等)' };
-  }
-  return { provider: 'deepseek', label: '已识别: OpenAI 兼容格式' };
-}
+// Fallback catalog used until GET /api/providers responds (or if it fails).
+// Mirrors tara_core/providers.py so the page still renders sensibly offline.
+const FALLBACK_PROVIDERS: ProviderSpec[] = [
+  { name: 'anthropic', label: 'Anthropic (Claude)', defaultModel: 'claude-sonnet-4-6', defaultBaseUrl: 'https://api.anthropic.com', requiresKey: true, allowsCustomBaseUrl: true, apiStyle: 'anthropic' },
+  { name: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o', defaultBaseUrl: 'https://api.openai.com/v1', requiresKey: true, allowsCustomBaseUrl: true, apiStyle: 'openai' },
+  { name: 'deepseek', label: 'DeepSeek', defaultModel: 'deepseek-flash', defaultBaseUrl: 'https://api.deepseek.com', requiresKey: true, allowsCustomBaseUrl: true, apiStyle: 'openai' },
+  { name: 'local', label: '本地模型 (Ollama/LM Studio/vLLM)', defaultModel: 'llama3', defaultBaseUrl: 'http://localhost:11434/v1', requiresKey: false, allowsCustomBaseUrl: true, apiStyle: 'openai' },
+];
 
-const PROVIDER_LABELS: Record<ApiProvider, string> = {
-  auto: '自动检测',
-  anthropic: 'Anthropic (Claude)',
-  deepseek: 'DeepSeek',
-  local: '本地模型 (Ollama/vLLM)',
-};
-
-const PROVIDER_SHORT: Record<ApiProvider, string> = {
-  auto: '自动',
+const SHORT_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
+  openai: 'OpenAI',
   deepseek: 'DeepSeek',
   local: '本地',
 };
 
+/**
+ * Guess the provider from an API key prefix.
+ *
+ * Only Anthropic (sk-ant-) is unambiguous; OpenAI and DeepSeek both issue
+ * "sk-" keys, so an unrecognised key returns null and the user must choose.
+ */
+function detectProvider(key: string): Exclude<ApiProvider, 'auto'> | null {
+  const trimmed = key.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('sk-ant-')) return 'anthropic';
+  if (trimmed.startsWith('sk-proj-')) return 'openai';
+  return null;
+}
+
 export default function Settings() {
   const [health, setHealth] = useState<Health | null>(null);
+  const [providers, setProviders] = useState<ProviderSpec[]>(FALLBACK_PROVIDERS);
   const [settingsProvider, setSettingsProvider] = useState<ApiProvider>('auto');
   const [settingsApiKey, setSettingsApiKey] = useState('');
   const [settingsModel, setSettingsModel] = useState('');
   const [settingsBaseUrl, setSettingsBaseUrl] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsTesting, setSettingsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
+  // True while the field holds the masked key returned by the server, so we
+  // don't post the mask back as if it were a new key.
+  const [keyIsMasked, setKeyIsMasked] = useState(false);
 
   const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([]);
   const [saveName, setSaveName] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
 
+  const providerMap = useMemo(() => {
+    const map: Record<string, ProviderSpec> = {};
+    providers.forEach((p) => { map[p.name] = p; });
+    return map;
+  }, [providers]);
+
   const detected = detectProvider(settingsApiKey);
-  const effectiveProvider: ApiProvider = settingsProvider === 'auto' ? detected.provider : settingsProvider;
+  const effectiveProvider: Exclude<ApiProvider, 'auto'> =
+    settingsProvider === 'auto' ? (detected ?? 'deepseek') : settingsProvider;
+  const spec = providerMap[effectiveProvider];
+  const needsKey = spec?.requiresKey ?? true;
+  // A key must be supplied unless the provider is keyless or we're holding the
+  // server's masked value (meaning a real key is already stored).
+  const keySatisfied = !needsKey || Boolean(settingsApiKey.trim()) || keyIsMasked;
 
   useEffect(() => {
     taraApi
       .health()
       .then(setHealth)
       .catch(() => setHealth({ status: 'error', provider: 'none', model: null, hasApiKey: false }));
+    taraApi
+      .listProviders()
+      .then((res) => { if (res.providers?.length) setProviders(res.providers); })
+      .catch(() => {});
     taraApi.getConfig().then((res) => {
       const cfg = res.config;
       if (cfg && cfg.provider) {
         setSettingsProvider(cfg.provider);
         setSettingsApiKey(cfg.api_key || '');
+        // A masked key from the server is a placeholder, not a real value.
+        setKeyIsMasked(Boolean(cfg.api_key && cfg.api_key.includes('*')));
         setSettingsModel(cfg.model || '');
         setSettingsBaseUrl(cfg.base_url || '');
       }
@@ -83,6 +110,10 @@ export default function Settings() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    setTestResult(null);
+  }, [settingsProvider, settingsApiKey, settingsModel, settingsBaseUrl]);
+
   function loadSavedConfigs() {
     taraApi.listConfigs().then((res) => setSavedConfigs(res.saved || [])).catch(() => {});
   }
@@ -93,6 +124,8 @@ export default function Settings() {
     try {
       const res = await taraApi.setConfig({
         provider: effectiveProvider,
+        // Send the masked value through unchanged: the server recognises it as
+        // "keep the stored key" rather than overwriting it.
         api_key: settingsApiKey,
         model: settingsModel || undefined,
         base_url: settingsBaseUrl || undefined,
@@ -106,6 +139,25 @@ export default function Settings() {
     }
   }
 
+  async function testConnection() {
+    setSettingsTesting(true);
+    setError('');
+    setTestResult(null);
+    try {
+      const res = await taraApi.testConfig({
+        provider: effectiveProvider,
+        api_key: settingsApiKey,
+        model: settingsModel || undefined,
+        base_url: settingsBaseUrl || undefined,
+      });
+      setTestResult({ ok: true, message: `连接成功 · ${res.model} · ${res.latencyMs} ms` });
+    } catch (err) {
+      setTestResult({ ok: false, message: err instanceof Error ? err.message : '连接失败' });
+    } finally {
+      setSettingsTesting(false);
+    }
+  }
+
   async function clearSettings() {
     setSettingsSaving(true);
     setError('');
@@ -115,6 +167,7 @@ export default function Settings() {
       setSettingsApiKey('');
       setSettingsModel('');
       setSettingsBaseUrl('');
+      setKeyIsMasked(false);
       setToast('API 配置已清除，恢复使用 .env 设置');
     } catch (err) {
       setError(err instanceof Error ? err.message : '清除配置失败');
@@ -166,12 +219,12 @@ export default function Settings() {
       <header className="page-header">
         <div className="page-header-left">
           <h1 className="page-title">设置</h1>
-          <span className="page-subtitle">配置 AI 模型提供商与运行参数</span>
+          <span className="page-subtitle">配置模型服务</span>
         </div>
         <div className="page-header-right">
           <span className={`status-indicator ${health?.hasApiKey ? 'status-connected' : health ? 'status-error' : 'status-disconnected'}`} />
           <span className="status-text">
-            {health?.hasApiKey ? `${PROVIDER_SHORT[health.provider as ApiProvider] || health.provider} · ${health.model || ''}` : health ? '未设置' : '检查中...'}
+            {health?.hasApiKey ? `${SHORT_LABELS[health.provider] || providerMap[health.provider]?.label || health.provider} · 已配置` : health ? '未配置' : '加载中'}
           </span>
         </div>
       </header>
@@ -191,12 +244,18 @@ export default function Settings() {
 
           <div className="settings-body">
             <div className="form-group">
-              <label className="form-label">模型提供商</label>
+              <label className="form-label">服务商</label>
               <div className="provider-auto-detect">
-                <div className={`auto-detect-result ${settingsApiKey.trim() ? 'auto-detect-result--found' : ''}`}>
-                  <span className={`auto-detect-dot ${settingsApiKey.trim() ? 'auto-detect-dot--active' : ''}`} />
+                <div className={`auto-detect-result ${settingsApiKey.trim() || keyIsMasked ? 'auto-detect-result--found' : ''}`}>
+                  <span className={`auto-detect-dot ${settingsApiKey.trim() || keyIsMasked ? 'auto-detect-dot--active' : ''}`} />
                   <span className="auto-detect-label">
-                    {settingsProvider === 'auto' ? detected.label : `手动选择: ${PROVIDER_LABELS[settingsProvider]}`}
+                    {settingsProvider === 'auto'
+                      ? detected
+                        ? `已识别: ${providerMap[detected]?.label ?? detected}`
+                        : keyIsMasked
+                          ? '使用已保存的密钥'
+                          : '请选择服务商'
+                      : `手动选择: ${providerMap[settingsProvider]?.label ?? settingsProvider}`}
                   </span>
                 </div>
                 <div className="provider-tabs provider-tabs--compact">
@@ -207,18 +266,24 @@ export default function Settings() {
                   >
                     自动
                   </button>
-                  {(['anthropic', 'deepseek', 'local'] as ApiProvider[]).map((value) => (
+                  {providers.map((p) => (
                     <button
-                      key={value}
+                      key={p.name}
                       type="button"
-                      className={`provider-tab provider-tab--small ${settingsProvider === value ? 'provider-tab--active' : ''}`}
-                      onClick={() => setSettingsProvider(value)}
+                      className={`provider-tab provider-tab--small ${settingsProvider === p.name ? 'provider-tab--active' : ''}`}
+                      onClick={() => setSettingsProvider(p.name)}
                     >
-                      {PROVIDER_SHORT[value]}
+                      {SHORT_LABELS[p.name] ?? p.name}
                     </button>
                   ))}
                 </div>
               </div>
+              {settingsProvider === 'auto' && !detected && !keyIsMasked && settingsApiKey.trim() && (
+                <div className="settings-hint settings-hint--warn">
+                  <Shield size={14} />
+                  <span>OpenAI 与 DeepSeek 的 Key 都以 <code>sk-</code> 开头，无法通过前缀区分。请在上方手动选择提供商。</span>
+                </div>
+              )}
             </div>
 
             <div className="form-group">
@@ -228,11 +293,12 @@ export default function Settings() {
                   className="form-input"
                   type={showApiKey ? 'text' : 'password'}
                   value={settingsApiKey}
-                  onChange={(event) => setSettingsApiKey(event.target.value)}
+                  onChange={(event) => {
+                    setSettingsApiKey(event.target.value);
+                    setKeyIsMasked(false);
+                  }}
                   placeholder={
-                    effectiveProvider === 'local'
-                      ? '本地模型可留空 (默认 ollama)'
-                      : '输入你的 API Key'
+                    needsKey ? '输入你的 API Key' : '本地模型可留空 (默认 ollama)'
                   }
                 />
                 <button
@@ -244,6 +310,7 @@ export default function Settings() {
                   {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
+              {keyIsMasked && <div className="form-caption"><Shield size={13} />密钥已安全保存，输入新值可替换</div>}
             </div>
 
             <div className="form-group">
@@ -252,45 +319,45 @@ export default function Settings() {
                 className="form-input"
                 value={settingsModel}
                 onChange={(event) => setSettingsModel(event.target.value)}
-                placeholder={
-                  effectiveProvider === 'anthropic'
-                    ? 'claude-sonnet-4-20250514'
-                    : effectiveProvider === 'deepseek'
-                      ? 'deepseek-chat'
-                      : 'llama3'
-                }
+                placeholder={spec?.defaultModel ?? ''}
               />
             </div>
 
-            {effectiveProvider !== 'anthropic' && (
+            {spec?.allowsCustomBaseUrl !== false && (
               <div className="form-group">
-                <label className="form-label">Base URL</label>
+                <label className="form-label">API 地址</label>
                 <input
                   className="form-input"
                   value={settingsBaseUrl}
                   onChange={(event) => setSettingsBaseUrl(event.target.value)}
-                  placeholder={
-                    effectiveProvider === 'deepseek'
-                      ? 'https://api.deepseek.com'
-                      : 'http://localhost:11434/v1'
-                  }
+                  placeholder={spec?.defaultBaseUrl ?? ''}
                 />
+                <div className="form-caption">留空使用默认地址 {spec?.defaultBaseUrl}</div>
               </div>
             )}
 
-            {settingsProvider === 'local' && (
-              <div className="settings-hint">
-                <Shield size={14} />
-                <span>本地模型使用 OpenAI 兼容 API（支持 Ollama、LM Studio、vLLM 等）。</span>
+            {testResult && (
+              <div className={`connection-result ${testResult.ok ? 'connection-result--success' : 'connection-result--error'}`} role="status">
+                {testResult.ok ? <Check size={16} /> : <X size={16} />}
+                <span>{testResult.message}</span>
               </div>
             )}
 
             <div className="settings-actions">
               <button
+                className="btn-export btn-export--secondary"
+                type="button"
+                onClick={testConnection}
+                disabled={settingsSaving || settingsTesting || !keySatisfied}
+              >
+                {settingsTesting ? <Loader2 className="spinner-icon" size={16} /> : <PlugZap size={16} />}
+                {settingsTesting ? '测试中' : '测试连接'}
+              </button>
+              <button
                 className="btn-export"
                 type="button"
                 onClick={saveSettings}
-                disabled={settingsSaving || (!settingsApiKey && settingsProvider !== 'local')}
+                disabled={settingsSaving || !keySatisfied}
               >
                 {settingsSaving ? <Loader2 className="spinner-icon" size={16} /> : <Save size={16} />}
                 保存配置
@@ -310,7 +377,6 @@ export default function Settings() {
         <section className="settings-card">
           <div className="settings-card-head">
             <h2 className="dash-section-title"><Check size={18} /> 已保存的配置</h2>
-            <span className="settings-card-hint">保存多组 API 配置，随时一键切换</span>
           </div>
 
           {savedConfigs.length === 0 && (

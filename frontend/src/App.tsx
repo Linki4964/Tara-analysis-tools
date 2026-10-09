@@ -50,6 +50,7 @@ const steps: Array<{ id: Step; label: string }> = [
 const PROVIDER_SHORT: Record<ApiProvider, string> = {
   auto: '自动',
   anthropic: 'Anthropic',
+  openai: 'OpenAI',
   deepseek: 'DeepSeek',
   local: '本地',
 };
@@ -88,6 +89,10 @@ export default function App() {
   const [attackPaths, setAttackPaths] = useState<AttackPath[]>([]);
   const [riskTreatments, setRiskTreatments] = useState<RiskTreatment[]>([]);
 
+  // True when the backend has no database configured (DATABASE_URL unset), so
+  // nothing created in this session can actually be persisted.
+  const [historyDisabled, setHistoryDisabled] = useState(false);
+
   const [showKeySwitcher, setShowKeySwitcher] = useState(false);
   const [savedConfigs, setSavedConfigs] = useState<import('./types/tara').SavedConfig[]>([]);
   const [saveName, setSaveName] = useState('');
@@ -96,7 +101,10 @@ export default function App() {
   useEffect(() => {
     taraApi
       .health()
-      .then(setHealth)
+      .then((h) => {
+        setHealth(h);
+        setHistoryDisabled(h.historyStorage === 'disabled');
+      })
       .catch(() => setHealth({ status: 'error', provider: 'none', model: null, hasApiKey: false }));
   }, []);
 
@@ -231,7 +239,15 @@ export default function App() {
         setCurrentRunId(res.runId);
         return res.runId;
       }
-    } catch { /* DB not available — continue without persistence */ }
+      // Backend answered but refused to persist (HTTP 503 "Database not available").
+      setHistoryDisabled(true);
+      console.warn('[TARA] 项目未能保存：后端未配置数据库 (DATABASE_URL)。');
+    } catch (err) {
+      // Exception path (503 surfaced by the client, or backend unreachable):
+      // continue without persistence, but stop pretending the run was saved.
+      setHistoryDisabled(true);
+      console.warn('[TARA] 项目未能保存：', err);
+    }
     return null;
   }
 
@@ -373,7 +389,8 @@ export default function App() {
         attackPaths,
         riskTreatments,
       });
-      setToast('Excel 已导出');
+      setToast('Excel 报告已导出');
+      setShowExportModal(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '导出失败');
     } finally {
@@ -471,8 +488,12 @@ export default function App() {
       });
       setRiskTreatments(treatmentData.riskTreatments || []);
 
-      if (runId) await taraApi.completeRun(runId);
-      setToast('完整分析已完成并保存');
+      if (runId) {
+        await taraApi.completeRun(runId);
+        setToast('完整分析已完成并保存');
+      } else {
+        setToast('分析已完成，但结果未保存（数据库未配置）');
+      }
       setShowExportModal(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : '完整分析失败');
@@ -627,6 +648,16 @@ export default function App() {
         ))}
       </nav>
         </>
+      )}
+
+      {historyDisabled && (
+        <div className="inline-alert inline-alert--warning">
+          <AlertTriangle size={16} />
+          <span>
+            数据库未配置，本次分析不会保存到项目列表。请在项目根目录的 <code>.env</code> 中设置
+            <code> DATABASE_URL</code> 并重启后端。
+          </span>
+        </div>
       )}
 
       {error && (
@@ -822,18 +853,15 @@ export default function App() {
           <button className="modal-overlay" type="button" onClick={() => setShowExportModal(false)} aria-label="关闭" />
           <div className="modal-content">
             <h3>导出完整 TARA 报告</h3>
-            <p>将包含所有 5 个步骤的分析结果。</p>
+            <p>使用标准 Excel 模板生成包含全部分析结果的报告。</p>
             <div className="modal-actions">
-              <button className="btn-export" type="button" onClick={() => exportJson('full')}>
-                <Download size={16} /> 导出 JSON
-              </button>
               <button
                 className="btn-export btn-export--excel"
                 type="button"
                 onClick={handleExportExcel}
                 disabled={riskTreatments.length === 0 || Boolean(busy)}
               >
-                <Download size={16} /> 导出 Excel
+                <Download size={16} /> 导出 Excel 报告
               </button>
               <button className="btn-export btn-export--secondary" type="button" onClick={() => setShowExportModal(false)}>
                 关闭

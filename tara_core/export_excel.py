@@ -1,18 +1,18 @@
 """Fill the TARA template .xlsx with analysis results.
 
-Template path: ``temples/模板.xlsx`` (relative to repo root).
+Template path: ``templates/模板.xlsx`` (relative to repo root).
 """
 
 from __future__ import annotations
 
 import io
-import os
+from pathlib import Path
 from typing import Any
 
 import openpyxl
 
-# Path to the template, resolved from this file's location
-_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "temples", "模板.xlsx")
+# Resolve from the repository root, independent of the process working directory.
+_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "模板.xlsx"
 
 
 def export_to_excel(
@@ -24,6 +24,8 @@ def export_to_excel(
     item_abbreviation: str = "VIU",
 ) -> bytes:
     """Fill the template with TARA results and return the workbook bytes."""
+    if not _TEMPLATE_PATH.is_file():
+        raise FileNotFoundError(f"Excel template not found: {_TEMPLATE_PATH}")
     wb = openpyxl.load_workbook(_TEMPLATE_PATH)
 
     _fill_cover(wb, project_name, item_abbreviation)
