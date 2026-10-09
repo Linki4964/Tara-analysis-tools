@@ -1,92 +1,120 @@
 # TARA Analysis Tools
 
-面向汽车网络安全的 TARA（Threat Analysis and Risk Assessment）分析平台，覆盖相关项定义、资产识别、威胁分析、攻击路径和风险处置流程。
+面向汽车网络安全的 TARA（Threat Analysis and Risk Assessment）分析平台，支持资产识别、威胁分析、攻击路径、风险处置和知识库管理。
 
-## 功能
+## 主要功能
 
-- 从 DOCX、PDF、XLSX、CSV、JSON、Markdown 和文本文件提取内容
-- 按 ISO/SAE 21434 工作流生成并维护 TARA 分析结果
-- 基于 STRIDE 构建威胁场景和攻击路径
-- 计算影响等级、攻击可行性和风险处置建议
-- 管理资产、漏洞、法规、攻击路径、黄金案例及纠偏规则
-- 使用 PostgreSQL、pgvector 与本地 BGE 模型进行混合检索
-- AI 解析非标准资产清单，经人工确认后批量入库
-- 保存分析历史并导出 Excel/JSON
+- 解析 DOCX、PDF、XLSX、CSV、JSON、Markdown 和文本文件
+- 使用 AI 识别非标准资产清单，并在人工确认后入库
+- 按 ISO/SAE 21434 流程生成 TARA 分析结果
+- 管理知识文件并进行 PostgreSQL + pgvector 混合检索
+- 使用 `bge-small-zh-v1.5` 生成 512 维语义向量
+- 保存分析历史，导出 Excel 或 JSON
 
-## 技术栈
+## 环境要求
 
-- 前端：React、TypeScript、Vite
-- 后端：FastAPI、Python
-- 数据库：PostgreSQL、pgvector
-- 向量模型：`bge-small-zh-v1.5`
-- AI：支持 Anthropic、OpenAI、DeepSeek 及 OpenAI 兼容的本地服务
+- Python 3.10+
+- Node.js 18+
+- PostgreSQL 14+ 与 pgvector
 
-## 快速开始
-
-### 1. 安装依赖
+## 安装
 
 ```bash
+git clone <repository-url>
+cd Tara-analysis-tools
+
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+
 npm install
 ```
 
-### 2. 准备 PostgreSQL
+## 数据库
 
-安装 PostgreSQL 和 [pgvector](https://github.com/pgvector/pgvector)，然后在项目数据库中启用扩展：
+在应用使用的数据库中启用 pgvector：
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-### 3. 配置环境
-
-复制 `.env.example` 为 `.env`，按需设置：
-
-```env
-DATABASE_URL=<postgresql-connection-string>
-RAG_EMBEDDING_MODEL=<local-bge-model-directory>
-API_PROVIDER=<provider-name>
-```
-
-API 密钥仅保存在本地 `.env` 或通过设置页面配置。不要将 `.env` 提交到版本库。
-
-### 4. 启动
+确认扩展安装位置与 `DATABASE_URL` 指向的是同一个 PostgreSQL 实例：
 
 ```bash
+psql "$DATABASE_URL" -c "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
+```
+
+## 配置
+
+```bash
+cp .env.example .env
+```
+
+最小配置示例：
+
+```env
+DATABASE_URL=postgresql://<user>:<password>@127.0.0.1:5432/<database>
+
+# OpenAI 兼容的 BGE Embedding 服务
+RAG_EMBEDDING_BASE_URL=http://127.0.0.1:7078/v1
+RAG_EMBEDDING_MODEL_NAME=bge-small-zh-v1.5
+RAG_EMBEDDING_DIMENSION=512
+
+# AI 服务；也可在前端设置页面配置
+API_PROVIDER=auto
+```
+
+`.env` 包含数据库密码和 API 密钥，不要提交到 Git。
+
+## BGE Embedding 服务
+
+本项目支持两种方式，配置了 `RAG_EMBEDDING_BASE_URL` 时优先使用独立服务。
+
+不配置 `RAG_EMBEDDING_BASE_URL`，并设置：
+
+```env
+RAG_EMBEDDING_MODEL=/absolute/path/to/bge-small-zh-v1.5
+RAG_EMBEDDING_DIMENSION=512
+```
+
+## 启动应用
+
+分别打开两个终端：
+
+```bash
+# 后端：http://127.0.0.1:8000
+source .venv/bin/activate
 npm run dev:backend
+```
+
+```bash
+# 前端：以 Vite 输出地址为准
 npm run dev:frontend
 ```
 
-前后端需分别在两个终端中运行。
+健康检查：
 
-## RAG
+```bash
+curl http://127.0.0.1:8000/api/health
+```
 
-RAG 模块位于 `backend/rag/`，包括：
+## RAG 代码
 
-- 本地 BGE Embedding
-- 七类领域知识库
-- 文档分类与定向入库
-- 向量与关键词混合检索
-- PostgreSQL/pgvector 存储边界
-
-详细说明见 `backend/rag/README.md`。
-
-旧向量库切换到 BGE 后，可执行：
+RAG 实现集中在 `backend/rag/`，详细模块说明见 `backend/rag/README.md`。旧向量数据库切换至 BGE 前请先备份，然后执行：
 
 ```bash
 python scripts/migrate_rag_to_bge.py
 ```
 
-迁移前请备份数据库。
-
 ## 项目结构
 
 ```text
 backend/       FastAPI 接口、服务与 RAG
-frontend/      React 前端
-tara_core/     TARA 业务逻辑、提示词与 AI 适配
-scripts/       数据库初始化、迁移与验证脚本
-rules/         TARA 分析规则
+frontend/      React + TypeScript 前端
+tara_core/     TARA 业务逻辑与 AI 适配
+scripts/       数据库迁移和维护脚本
+deploy/        服务部署模板
+rules/         分析规则
 ```
 
 ## 构建
@@ -95,12 +123,12 @@ rules/         TARA 分析规则
 npm run build:frontend
 ```
 
-## 安全提示
+## 安全说明
 
-- 不要提交 `.env`、API 密钥、数据库密码或生产数据。
-- 上传的文档可能包含敏感设计信息，请根据组织的数据安全要求部署。
-- AI 生成的分析结果应由具备资质的工程师审核，不应直接作为合规结论。
+- 不要提交 `.env`、API 密钥、数据库密码、日志或上传的业务数据。
+- 上传文档可能包含敏感设计信息，请按组织要求部署和授权。
+- AI 结果应由专业人员复核，不应直接作为合规结论。
 
 ## License
 
-提交公开仓库前，请根据项目使用场景补充合适的开源许可证。
+发布公开仓库前，请添加适合项目使用方式的开源许可证。

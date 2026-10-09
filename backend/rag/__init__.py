@@ -5,9 +5,9 @@ Database CRUD lives in repository.py (currently backed by the existing knowledge
 """
 
 from .registry import LIBRARIES
-from .repository import asset_overview, create_entry, delete_entry, list_entries, update_entry
+from .repository import asset_overview, create_entry, delete_entry, list_documents, list_entries, update_entry
 from .retriever import search
 from .ingestion import classify, ingest_text
 
-__all__ = ["LIBRARIES", "asset_overview", "create_entry", "delete_entry", "list_entries",
+__all__ = ["LIBRARIES", "asset_overview", "create_entry", "delete_entry", "list_documents", "list_entries",
            "update_entry", "search", "classify", "ingest_text"]

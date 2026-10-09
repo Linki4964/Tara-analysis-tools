@@ -1,0 +1,14 @@
+[Unit]
+Description=BGE Small Chinese Embedding Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mode/bge-small-zh-v1.5
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

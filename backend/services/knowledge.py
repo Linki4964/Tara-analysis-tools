@@ -174,6 +174,36 @@ async def asset_overview() -> dict[str, Any]:
             "topInterfaces": [[row["interface"], row["count"]] for row in interfaces]}
 
 
+async def list_documents(query: str = "", page: int = 1, page_size: int = 25) -> dict[str, Any]:
+    """List every file uploaded into the RAG knowledge base."""
+    pool = await get_pool()
+    if pool is None:
+        raise HTTPException(503, "知识库数据库未配置，请设置 DATABASE_URL")
+    page, page_size = max(page, 1), min(max(page_size, 1), 100)
+    args: list[Any] = []
+    where = ""
+    if query.strip():
+        args.append(f"%{query.strip()}%")
+        where = " WHERE d.file_name ILIKE $1 OR d.file_type ILIKE $1 OR d.parse_status ILIKE $1"
+    library_union = """
+        SELECT doc_id, string_agg(DISTINCT library, ',') AS libraries FROM (
+            SELECT doc_id, 'assets' AS library FROM kb_asset_templates WHERE doc_id IS NOT NULL
+            UNION ALL SELECT doc_id, 'damages' FROM kb_damage_impacts WHERE doc_id IS NOT NULL
+            UNION ALL SELECT doc_id, 'threats' FROM kb_threat_scenarios WHERE doc_id IS NOT NULL
+            UNION ALL SELECT doc_id, 'attack-paths' FROM kb_attack_paths WHERE doc_id IS NOT NULL
+            UNION ALL SELECT doc_id, 'regulations' FROM kb_regulations_standards WHERE doc_id IS NOT NULL
+        ) classified GROUP BY doc_id
+    """
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT count(*) FROM raw_documents d{where}", *args)
+        query_args = [*args, page_size, (page - 1) * page_size]
+        rows = await conn.fetch(
+            f"SELECT d.*, COALESCE(k.libraries, '') AS libraries FROM raw_documents d "
+            f"LEFT JOIN ({library_union}) k ON k.doc_id=d.id{where} "
+            f"ORDER BY d.created_at DESC LIMIT ${len(args)+1} OFFSET ${len(args)+2}", *query_args)
+    return {"items": [_serialize(row) for row in rows], "total": total, "page": page, "pageSize": page_size}
+
+
 def classify(text: str, filename: str) -> str:
     lower = filename.lower()
     if "cve" in lower or re.search(r"CVE-\d{4}-\d{4,7}", text, re.I):
@@ -194,9 +224,21 @@ async def ingest_text(filename: str, file_type: str, content: bytes, text: str, 
         raise HTTPException(503, "知识库数据库未配置，请设置 DATABASE_URL")
     async with pool.acquire() as conn:
         existing = await conn.fetchrow("SELECT id, parse_status, chunk_count FROM raw_documents WHERE file_hash=$1", digest)
-        if existing:
+        if existing and existing["parse_status"] != "FAILED":
             return {"documentId": str(existing["id"]), "library": library, "chunkCount": existing["chunk_count"], "duplicate": True}
-        doc_id = await conn.fetchval("INSERT INTO raw_documents(file_name,file_type,file_hash,storage_path,parse_status) VALUES($1,$2,$3,$4,'PROCESSING') RETURNING id", filename, file_type, digest, f"database://raw/{digest}")
+        if existing:
+            doc_id = existing["id"]
+            # A failed ingestion may have written a partial set before the error.
+            # Remove only chunks owned by this document, then retry cleanly.
+            for spec in LIBRARIES.values():
+                if spec["table"] not in {"kb_golden_cases", "kb_correction_rules"}:
+                    await conn.execute(f'DELETE FROM {spec["table"]} WHERE doc_id=$1', doc_id)
+            await conn.execute(
+                "UPDATE raw_documents SET file_name=$1,file_type=$2,storage_path=$3,parse_status='PROCESSING',error_message=NULL,chunk_count=0 WHERE id=$4",
+                filename, file_type, f"database://raw/{digest}", doc_id,
+            )
+        else:
+            doc_id = await conn.fetchval("INSERT INTO raw_documents(file_name,file_type,file_hash,storage_path,parse_status) VALUES($1,$2,$3,$4,'PROCESSING') RETURNING id", filename, file_type, digest, f"database://raw/{digest}")
     chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n|(?=CVE-\d{4}-\d{4,7})", text) if len(chunk.strip()) >= 20][:500]
     if not chunks:
         chunks = [text[:12000]]

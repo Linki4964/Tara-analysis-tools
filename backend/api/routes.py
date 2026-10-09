@@ -422,6 +422,11 @@ async def asset_overview():
     return {"success": True, **(await knowledge.asset_overview())}
 
 
+@router.get("/knowledge-documents")
+async def knowledge_documents(q: str = "", page: int = 1, page_size: int = Query(25, alias="pageSize")):
+    return {"success": True, **(await knowledge.list_documents(query=q, page=page, page_size=page_size))}
+
+
 @router.post("/asset-import/preview")
 async def asset_import_preview(file: UploadFile = File(...)):
     extracted = await extract_upload(file)

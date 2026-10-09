@@ -135,6 +135,13 @@ export const taraApi = {
     return data as { success: boolean; library: string; chunkCount: number; duplicate: boolean };
   },
   assetOverview: () => get<{ success: boolean; total: number; byType: Record<string, number>; topComponents: [string, number][]; topInterfaces: [string, number][] }>('/api/asset-overview'),
+  listKnowledgeDocuments: (filters: { q?: string; page?: number; pageSize?: number }) => {
+    const params = new URLSearchParams();
+    if (filters.q) params.set('q', filters.q);
+    params.set('page', String(filters.page || 1));
+    params.set('pageSize', String(filters.pageSize || 25));
+    return get<{ success: boolean; items: Record<string, unknown>[]; total: number; page: number; pageSize: number }>(`/api/knowledge-documents?${params}`);
+  },
   previewAssetImport: async (file: File) => {
     const body = new FormData(); body.append('file', file);
     const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/asset-import/preview`, { method: 'POST', body });
