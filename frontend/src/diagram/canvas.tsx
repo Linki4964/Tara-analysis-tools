@@ -33,7 +33,7 @@ import type { ArrowDir, DrawShape, HandleId, SideId, ShapeKind, ToolId, ToolStyl
 import {
   TOOL_STYLE,
   FONT_FAMILY,
-  clipToShape,
+  arrowPolylinePoints,
   contentBounds,
   handlesOf,
   hitsShape,
@@ -43,6 +43,7 @@ import {
   makeShapeIdFactory,
   makeTextShape,
   moveShape,
+  nearestSidePoint,
   overlapsRect,
   rectFromCorners,
   rectOf,
@@ -50,6 +51,7 @@ import {
   resizeWithHandle,
   resolveConnectors,
   sidePointsOf,
+  sidePointOf,
 } from './shapes';
 
 /* ---------------------------------------------------------------- */
@@ -75,6 +77,50 @@ function arrowHeadPts(x: number, y: number, dx: number, dy: number): string {
   return `${r(x)},${r(y)} ${r(bx + px)},${r(by + py)} ${r(bx - px)},${r(by - py)}`;
 }
 
+function roundedOrthogonalPath(points: Array<{ x: number; y: number }>, radius = 8): string {
+  if (points.length < 2) return '';
+  const clean = points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
+  let path = `M ${clean[0].x} ${clean[0].y}`;
+  for (let index = 1; index < clean.length - 1; index++) {
+    const previous = clean[index - 1];
+    const corner = clean[index];
+    const next = clean[index + 1];
+    const inLength = Math.hypot(corner.x - previous.x, corner.y - previous.y);
+    const outLength = Math.hypot(next.x - corner.x, next.y - corner.y);
+    const cross = (corner.x - previous.x) * (next.y - corner.y) - (corner.y - previous.y) * (next.x - corner.x);
+    if (inLength < 0.01 || outLength < 0.01 || Math.abs(cross) < 0.01) {
+      path += ` L ${corner.x} ${corner.y}`;
+      continue;
+    }
+    const r = Math.min(radius, inLength / 2, outLength / 2);
+    const entry = {
+      x: corner.x - ((corner.x - previous.x) / inLength) * r,
+      y: corner.y - ((corner.y - previous.y) / inLength) * r,
+    };
+    const exit = {
+      x: corner.x + ((next.x - corner.x) / outLength) * r,
+      y: corner.y + ((next.y - corner.y) / outLength) * r,
+    };
+    path += ` L ${entry.x} ${entry.y} Q ${corner.x} ${corner.y} ${exit.x} ${exit.y}`;
+  }
+  const last = clean[clean.length - 1];
+  return `${path} L ${last.x} ${last.y}`;
+}
+
+function arrowLabelPoint(points: Array<{ x: number; y: number }>): { x: number; y: number; anchor: 'start' | 'middle' } {
+  let best = { a: points[0], b: points[points.length - 1], length: 0 };
+  for (let index = 0; index < points.length - 1; index++) {
+    const a = points[index];
+    const b = points[index + 1];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length > best.length) best = { a, b, length };
+  }
+  const horizontal = Math.abs(best.b.x - best.a.x) >= Math.abs(best.b.y - best.a.y);
+  return horizontal
+    ? { x: (best.a.x + best.b.x) / 2, y: (best.a.y + best.b.y) / 2 - 7, anchor: 'middle' }
+    : { x: (best.a.x + best.b.x) / 2 + 7, y: (best.a.y + best.b.y) / 2 + 4, anchor: 'start' };
+}
+
 function ShapeGlyph({ s }: { s: DrawShape }) {
   const { x, y, w, h } = rectOf(s);
   const text = s.text || '';
@@ -95,14 +141,35 @@ function ShapeGlyph({ s }: { s: DrawShape }) {
 
   /* --- arrow ----------------------------------------------------- */
   if (s.kind === 'arrow') {
+    const points = arrowPolylinePoints(s);
+    const path = roundedOrthogonalPath(points);
+    const beforeEnd = points[Math.max(0, points.length - 2)];
+    const afterStart = points[Math.min(1, points.length - 1)];
+    const label = arrowLabelPoint(points);
     return (
       <g>
         {/* white casing keeps the arrow readable over busy backgrounds */}
-        <line x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke="#ffffff" strokeWidth={s.strokeWidth + 2.2} strokeLinecap="round" />
-        <line x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.stroke} strokeWidth={s.strokeWidth} strokeLinecap="round" />
-        <polygon points={arrowHeadPts(s.x2, s.y2, s.x2 - s.x1, s.y2 - s.y1)} fill={s.stroke} />
+        <path d={path} fill="none" stroke="#ffffff" strokeWidth={s.strokeWidth + 2.2} strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path} fill="none" stroke={s.stroke} strokeWidth={s.strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+        <polygon points={arrowHeadPts(s.x2, s.y2, s.x2 - beforeEnd.x, s.y2 - beforeEnd.y)} fill={s.stroke} />
         {s.arrowDir === 'double' && (
-          <polygon points={arrowHeadPts(s.x1, s.y1, s.x1 - s.x2, s.y1 - s.y2)} fill={s.stroke} />
+          <polygon points={arrowHeadPts(s.x1, s.y1, s.x1 - afterStart.x, s.y1 - afterStart.y)} fill={s.stroke} />
+        )}
+        {text && (
+          <text
+            x={label.x}
+            y={label.y}
+            textAnchor={label.anchor}
+            fontFamily={FONT_FAMILY}
+            fontSize={s.fontSize || 12}
+            fill={s.color || s.stroke}
+            stroke="#ffffff"
+            strokeWidth={5}
+            strokeLinejoin="round"
+            paintOrder="stroke"
+          >
+            {text}
+          </text>
         )}
       </g>
     );
@@ -138,6 +205,26 @@ function ShapeGlyph({ s }: { s: DrawShape }) {
             </text>
           </>
         )}
+        {!s.headerFill && text && (() => {
+          const lines = text.split('\n');
+          const lineHeight = (s.fontSize || 13) * 1.25;
+          const firstY = y + h / 2 - ((lines.length - 1) * lineHeight) / 2;
+          return (
+            <text
+              x={x + w / 2}
+              y={firstY}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fontFamily={FONT_FAMILY}
+              fontSize={s.fontSize || 13}
+              fill={s.color || '#111827'}
+            >
+              {lines.map((line, index) => (
+                <tspan key={index} x={x + w / 2} dy={index === 0 ? 0 : lineHeight}>{line}</tspan>
+              ))}
+            </text>
+          );
+        })()}
       </g>
     );
   }
@@ -191,20 +278,23 @@ interface Editing {
   color: string;
   value: string;
   width: number; // css px
+  align?: 'left' | 'center';
 }
 
 type Gesture =
-  | { mode: 'create'; kind: ShapeKind; dashed?: boolean; dir?: ArrowDir; ax: number; ay: number }
-  | { mode: 'connect'; srcId: string; ax: number; ay: number }
+  | { mode: 'create'; kind: ShapeKind; dashed?: boolean; dir?: ArrowDir; ax: number; ay: number; clientX: number; clientY: number; downAt: number }
+  | { mode: 'connect'; srcId: string; srcSide: SideId; ax: number; ay: number }
   | { mode: 'move'; ids: string[]; sx: number; sy: number; origs: Record<string, DrawShape> }
   | { mode: 'resize'; id: string; key: HandleId }
   | { mode: 'marquee'; ax: number; ay: number; additive: boolean }
   | null;
 
-const MIN_DRAG = 3; // model units before a drag counts as a real draw
+const MIN_DRAG = 3; // model units for selection / connector gestures
+const CREATE_DRAG_PX = 12; // screen pixels, independent of zoom
+const CREATE_HOLD_MS = 140; // deliberate press before a shape may be created
 
 function editable(s: DrawShape): boolean {
-  return s.kind === 'text' || (s.kind === 'rect' && !!s.headerFill);
+  return s.kind === 'text' || s.kind === 'arrow' || s.kind === 'rect' || s.kind === 'dashedRect';
 }
 
 const isHostable = (s: DrawShape | null | undefined): s is DrawShape =>
@@ -343,6 +433,26 @@ export default function DrawCanvas({
     e.preventDefault();
     const p = toModel(e);
 
+    // Existing objects always take interaction priority, regardless of the
+    // active drawing tool. A click selects; holding and dragging moves. Port
+    // handles still own their pointer event, so connector creation is intact.
+    if (tool !== 'select') {
+      const hit = selectShapeAt(p.x, p.y);
+      if (hit) {
+        onSelect([hit.id]);
+        setPortHost(isArrowTool(tool) && isHostable(hit) ? hit.id : null);
+        gesture.current = {
+          mode: 'move',
+          ids: [hit.id],
+          sx: p.x,
+          sy: p.y,
+          origs: { [hit.id]: hit },
+        };
+        busyRef.current = true;
+        return;
+      }
+    }
+
     if (tool === 'select') {
       const additive = e.ctrlKey || e.metaKey;
       setPortHost(null);
@@ -390,7 +500,10 @@ export default function DrawCanvas({
     }
 
     if (tool === 'text') {
-      gesture.current = { mode: 'create', kind: 'text', ax: p.x, ay: p.y };
+      gesture.current = {
+        mode: 'create', kind: 'text', ax: p.x, ay: p.y,
+        clientX: e.clientX, clientY: e.clientY, downAt: performance.now(),
+      };
       busyRef.current = true;
       return;
     }
@@ -415,6 +528,9 @@ export default function DrawCanvas({
       dir: tool === 'arrowDouble' ? 'double' : tool === 'arrowSingle' ? 'single' : undefined,
       ax: p.x,
       ay: p.y,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      downAt: performance.now(),
     };
     busyRef.current = true;
   };
@@ -430,18 +546,24 @@ export default function DrawCanvas({
         cancelGesture();
         return;
       }
-      const from = clipToShape(src, p.x, p.y);
+      const from = sidePointOf(src, g.srcSide);
       const dir: ArrowDir = tool === 'arrowDouble' ? 'double' : 'single';
-      setDraft(makeArrowShape('__draft', from.x, from.y, p.x, p.y, dir, styleFor(dir === 'double' ? 'arrowDouble' : 'arrowSingle')));
       const t = candidateAt(p.x, p.y, g.srcId);
+      const targetPort = t ? nearestSidePoint(t, p.x, p.y) : null;
+      const end = targetPort ?? p;
+      const preview = makeArrowShape('__draft', from.x, from.y, end.x, end.y, dir, styleFor(dir === 'double' ? 'arrowDouble' : 'arrowSingle'));
+      preview.caSide = g.srcSide;
+      preview.cbSide = targetPort?.side ?? null;
+      setDraft(preview);
       setConnectTo(t ? t.id : null);
       return;
     }
 
     if (g.mode === 'create') {
-      const dist = Math.hypot(p.x - g.ax, p.y - g.ay);
       if (g.kind === 'text') return;
-      if (dist < MIN_DRAG && !draft) return;
+      const screenDist = Math.hypot(e.clientX - g.clientX, e.clientY - g.clientY);
+      const heldLongEnough = performance.now() - g.downAt >= CREATE_HOLD_MS;
+      if (!heldLongEnough || screenDist < CREATE_DRAG_PX) return;
       let prev: DrawShape;
       if (g.kind === 'rect') {
         prev = makeRectShape(g.dashed ? 'dashedRect' : 'rect', '__draft', g.ax, g.ay, p.x, p.y, styleFor(g.dashed ? 'dashedRect' : 'rect'));
@@ -501,7 +623,18 @@ export default function DrawCanvas({
         dir,
         styleFor(dir === 'double' ? 'arrowDouble' : 'arrowSingle')
       );
-      const attached: DrawShape = { ...shape, ca: g.srcId, cb: target ? target.id : null };
+      const targetPort = target ? nearestSidePoint(target, p.x, p.y) : null;
+      const attached: DrawShape = {
+        ...shape,
+        x1: sidePointOf(src, g.srcSide).x,
+        y1: sidePointOf(src, g.srcSide).y,
+        x2: targetPort?.x ?? p.x,
+        y2: targetPort?.y ?? p.y,
+        ca: g.srcId,
+        cb: target ? target.id : null,
+        caSide: g.srcSide,
+        cbSide: targetPort?.side ?? null,
+      };
       setPortHost(null);
       setConnectTo(null);
       commitWork([...workRef.current, attached]);
@@ -509,27 +642,32 @@ export default function DrawCanvas({
     }
 
     if (g.mode === 'create') {
+      const screenDist = Math.hypot(e.clientX - g.clientX, e.clientY - g.clientY);
+      const heldLongEnough = performance.now() - g.downAt >= CREATE_HOLD_MS;
       const dist = Math.hypot(p.x - g.ax, p.y - g.ay);
       if (g.kind === 'text') {
         setEditing({ id: null, px: g.ax, py: g.ay, fontSize: 14, color: '#1e293b', value: '', width: 180 });
         gesture.current = null;
         return; // busy stays set until editing closes
       }
+      if (!heldLongEnough || screenDist < CREATE_DRAG_PX) {
+        cancelGesture();
+        const hit = selectShapeAt(p.x, p.y);
+        onSelect(hit ? [hit.id] : []);
+        return;
+      }
       let shape: DrawShape;
       if (g.kind === 'rect') {
-        shape = makeRectShape(g.dashed ? 'dashedRect' : 'rect', idGenRef.current('r'), g.ax, g.ay, dist < MIN_DRAG ? g.ax + 150 : p.x, dist < MIN_DRAG ? g.ay + 96 : p.y, styleFor(g.dashed ? 'dashedRect' : 'rect'));
+        shape = makeRectShape(g.dashed ? 'dashedRect' : 'rect', idGenRef.current('r'), g.ax, g.ay, p.x, p.y, styleFor(g.dashed ? 'dashedRect' : 'rect'));
       } else if (g.kind === 'circle') {
-        const isClick = dist < MIN_DRAG;
         shape = makeCircleShape(
           idGenRef.current('o'),
-          isClick ? g.ax - 45 : Math.min(g.ax, p.x),
-          isClick ? g.ay - 45 : Math.min(g.ay, p.y),
-          isClick ? g.ax + 45 : Math.max(g.ax, p.x),
-          isClick ? g.ay + 45 : Math.max(g.ay, p.y),
+          Math.min(g.ax, p.x), Math.min(g.ay, p.y),
+          Math.max(g.ax, p.x), Math.max(g.ay, p.y),
           styleFor('circle')
         );
       } else {
-        shape = makeArrowShape(idGenRef.current('a'), g.ax, g.ay, dist < MIN_DRAG ? g.ax + 140 : p.x, p.y, g.dir ?? 'single', styleFor(g.dir === 'double' ? 'arrowDouble' : 'arrowSingle'));
+        shape = makeArrowShape(idGenRef.current('a'), g.ax, g.ay, p.x, p.y, g.dir ?? 'single', styleFor(g.dir === 'double' ? 'arrowDouble' : 'arrowSingle'));
       }
       commitWork([...workRef.current, shape]);
       return;
@@ -584,34 +722,39 @@ export default function DrawCanvas({
   };
 
   /* ------------------- connect port drag ------------------- */
-  const onPortDown = (e: RPointerEvent<SVGGElement>, _side: SideId) => {
+  const onPortDown = (e: RPointerEvent<SVGGElement>, side: SideId) => {
     if (busyRef.current) return;
     if (!portHost) return;
     e.stopPropagation();
     e.preventDefault();
     const p = toModel(e);
     (e.currentTarget as SVGGElement).setPointerCapture?.(e.pointerId);
-    gesture.current = { mode: 'connect', srcId: portHost, ax: p.x, ay: p.y };
+    gesture.current = { mode: 'connect', srcId: portHost, srcSide: side, ax: p.x, ay: p.y };
     busyRef.current = true;
   };
 
   /* ------------------- text editing ------------------- */
   const onDoubleClick = (e: RPointerEvent<SVGSVGElement>) => {
-    if (tool !== 'select' || busyRef.current) return;
+    if (busyRef.current) return;
     const p = toModel(e);
     const hit = selectShapeAt(p.x, p.y);
     if (!hit || !editable(hit)) return;
     // editing is single-object: make the double-clicked object the sole selection
     if (selectedIds.length !== 1 || selectedIds[0] !== hit.id) onSelect([hit.id]);
     const r = rectOf(hit);
+    const arrowLabel = hit.kind === 'arrow' ? arrowLabelPoint(arrowPolylinePoints(hit)) : null;
+    const bodyBox = (hit.kind === 'rect' || hit.kind === 'dashedRect') && !hit.headerFill;
     setEditing({
       id: hit.id,
-      px: r.x,
-      py: hit.kind === 'rect' ? r.y + HDR_H / 2 - (hit.fontSize || 13) * 0.7 : r.y,
+      px: arrowLabel?.x ?? r.x,
+      py: arrowLabel?.y ?? (bodyBox
+        ? r.y + r.h / 2 - (hit.fontSize || 13) * 0.7
+        : hit.kind === 'rect' ? r.y + HDR_H / 2 - (hit.fontSize || 13) * 0.7 : r.y),
       fontSize: hit.fontSize || 13,
       color: hit.color || '#1e293b',
       value: hit.text || '',
-      width: Math.max(160, (hit.kind === 'rect' ? r.w : 200) * zoom),
+      width: Math.max(120, (bodyBox || hit.kind === 'rect' ? r.w : 200) * zoom),
+      align: bodyBox ? 'center' : 'left',
     });
     busyRef.current = true;
   };
@@ -798,6 +941,7 @@ export default function DrawCanvas({
             fontSize: editing.fontSize * zoom,
             color: editing.color,
             fontFamily: FONT_FAMILY,
+            textAlign: editing.align ?? 'left',
           }}
           onChange={(e) => setEditing((ed) => (ed ? { ...ed, value: e.target.value } : ed))}
           onBlur={() => closeEditing(true)}

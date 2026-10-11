@@ -80,6 +80,71 @@ def extract_item_definition(payload):
     }
 
 
+def extract_item_definition_from_diagram(payload):
+    """Convert vector-board JSON into an Item Definition through the configured LLM.
+
+    Only semantic fields are sent to the model. Coordinates and presentation
+    styles are deliberately excluded so they cannot be mistaken for assets.
+    """
+    diagram = payload.get("diagram") or {}
+    shapes = diagram.get("shapes") if isinstance(diagram, dict) else None
+    if not isinstance(shapes, list) or not shapes:
+        return bad_request("Diagram is required.", "架构图中没有可供解析的图元。")
+
+    boxes = []
+    flows = []
+    names = {}
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            continue
+        shape_id = str(shape.get("id") or "").strip()
+        text = str(shape.get("text") or "").strip()
+        kind = str(shape.get("kind") or "").strip()
+        if kind != "arrow" and text:
+            names[shape_id] = text
+            boxes.append({"id": shape_id, "kind": kind, "text": text})
+
+    for shape in shapes:
+        if not isinstance(shape, dict) or shape.get("kind") != "arrow":
+            continue
+        source_id = str(shape.get("ca") or "").strip()
+        target_id = str(shape.get("cb") or "").strip()
+        flows.append({
+            "source": names.get(source_id, source_id or "未绑定端点"),
+            "target": names.get(target_id, target_id or "未绑定端点"),
+            "label": str(shape.get("text") or "数据流").strip() or "数据流",
+            "bidirectional": shape.get("arrowDir") == "double",
+        })
+
+    if not boxes:
+        return bad_request("Diagram labels are required.", "请先为架构图中的矩形输入名称，再进行 AI 解析。")
+
+    semantic_diagram = {
+        "diagramName": str(diagram.get("name") or payload.get("projectName") or "系统架构图"),
+        "entitiesAndBoundaries": boxes,
+        "dataFlows": flows,
+    }
+    import json
+    source_text = (
+        "请根据以下汽车网络安全架构图语义 JSON 识别 ISO/SAE 21434 相关项定义。"
+        "矩形表示硬件、软件、外部实体、资产或安全控件；虚线矩形表示信任边界；"
+        "箭头表示数据流。相关项应覆盖图中承担功能或交换数据的系统组件，并从连线名称推导功能，"
+        "不要把坐标、样式、信任边界本身或攻击者单独当作被评估相关项。\n\n"
+        + json.dumps(semantic_diagram, ensure_ascii=False, indent=2)
+    )
+    result = extract_item_definition({
+        "extractedText": source_text,
+        "filename": f"{semantic_diagram['diagramName']}.diagram.json",
+    })
+    if isinstance(result, dict) and result.get("success") is not False:
+        result["source"] = "architecture_diagram"
+        result["diagramSummary"] = {
+            "entityCount": len(boxes),
+            "flowCount": len(flows),
+        }
+    return result
+
+
 def generate_assets(payload):
     project_name = payload.get("projectName") or ""
     system_description = (payload.get("systemDescription") or "").strip()

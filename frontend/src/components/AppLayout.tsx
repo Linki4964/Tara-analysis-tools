@@ -4,6 +4,7 @@ import {
   BookOpen,
   FolderKanban,
   LayoutDashboard,
+  Loader2,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -11,6 +12,7 @@ import {
   Shield,
   ShieldCheck,
 } from 'lucide-react';
+import { taraApi } from '../api/taraApi';
 
 const NAV_ITEMS = [
   { to: '/home', label: '主页', icon: LayoutDashboard },
@@ -24,6 +26,7 @@ const COLLAPSE_KEY = 'tara-dock-collapsed';
 
 export default function AppLayout() {
   const navigate = useNavigate();
+  const [creatingProject, setCreatingProject] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem(COLLAPSE_KEY) === '1';
@@ -42,6 +45,31 @@ export default function AppLayout() {
     });
   }
 
+  async function handleCreateProject() {
+    if (creatingProject) return;
+    setCreatingProject(true);
+    try {
+      const now = new Date();
+      const stamp = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+      ].join('') + '-' + [
+        String(now.getHours()).padStart(2, '0'),
+        String(now.getMinutes()).padStart(2, '0'),
+        String(now.getSeconds()).padStart(2, '0'),
+      ].join('');
+      const result = await taraApi.createRun({ projectName: `未命名项目-${stamp}` });
+      if (!result.runId) throw new Error('后端未返回项目编号');
+      navigate('/workspace', { state: { loadRunId: result.runId, startAt: 0 } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '数据库暂不可用';
+      window.alert(`项目创建失败：${message}`);
+    } finally {
+      setCreatingProject(false);
+    }
+  }
+
   return (
     <div className={`app-shell ${collapsed ? 'app-shell--collapsed' : ''}`}>
       <aside className="dock">
@@ -55,9 +83,9 @@ export default function AppLayout() {
           </div>
         </div>
 
-        <button className="dock-new" type="button" onClick={() => navigate('/workspace')} title="新建分析项目">
-          <Plus size={17} />
-          <span>新建项目</span>
+        <button className="dock-new" type="button" onClick={() => void handleCreateProject()} disabled={creatingProject} title="新建并立即保存分析项目">
+          {creatingProject ? <Loader2 size={17} className="spinner-icon" /> : <Plus size={17} />}
+          <span>{creatingProject ? '正在创建…' : '新建项目'}</span>
         </button>
 
         <nav className="dock-nav">

@@ -3677,8 +3677,13 @@ button:disabled {
   margin-left: 4px;
 }
 
-.diagram-navbar-next:hover {
+.diagram-navbar-next:hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+.diagram-navbar-next:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 
 .diagram-navbar-pill {

@@ -21,7 +21,6 @@ import {
   FLOW_COLOR,
   FONT_STACK,
   ITEM_STYLE,
-  SERVICE_FILL,
 } from './colors';
 import type { ArchModel } from './types';
 
@@ -45,6 +44,8 @@ export interface DrawShape {
   y1: number;
   x2: number;
   y2: number;
+  /** Optional interior points for an orthogonal/polyline connector. */
+  bends: Array<{ x: number; y: number }>;
   /** appearance */
   fill: string;
   stroke: string;
@@ -60,6 +61,9 @@ export interface DrawShape {
    */
   ca: string | null;
   cb: string | null;
+  /** Exact edge ports used by attached connectors. Older saved diagrams may omit these. */
+  caSide?: SideId | null;
+  cbSide?: SideId | null;
   /** textual content */
   text: string;
   fontSize: number;
@@ -129,9 +133,9 @@ function blankShape(kind: ShapeKind): DrawShape {
     id: '',
     kind,
     x: 0, y: 0, w: 0, h: 0,
-    x1: 0, y1: 0, x2: 0, y2: 0,
+    x1: 0, y1: 0, x2: 0, y2: 0, bends: [],
     fill: '#ffffff', stroke: '#334155', strokeWidth: 1.8, dashed: false,
-    arrowDir: 'single', ca: null, cb: null, text: '', fontSize: DEFAULT_FONT, color: TEXT_DEF,
+    arrowDir: 'single', ca: null, cb: null, caSide: null, cbSide: null, text: '', fontSize: DEFAULT_FONT, color: TEXT_DEF,
     headerFill: null, labelBg: false,
   };
 }
@@ -139,9 +143,12 @@ function blankShape(kind: ShapeKind): DrawShape {
 /** Canonical bbox for any shape (arrows derive it from their endpoints). */
 export function rectOf(s: DrawShape): { x: number; y: number; w: number; h: number } {
   if (s.kind === 'arrow') {
-    const x = Math.min(s.x1, s.x2);
-    const y = Math.min(s.y1, s.y2);
-    return { x, y, w: Math.abs(s.x2 - s.x1), h: Math.abs(s.y2 - s.y1) };
+    const points = arrowPolylinePoints(s);
+    const xs = points.map((point) => point.x);
+    const ys = points.map((point) => point.y);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
   }
   return { x: s.x, y: s.y, w: s.w, h: s.h };
 }
@@ -164,6 +171,7 @@ export function moveShape(s: DrawShape, dx: number, dy: number): DrawShape {
   const g = { ...s };
   if (g.kind === 'arrow') {
     g.x1 += dx; g.y1 += dy; g.x2 += dx; g.y2 += dy;
+    g.bends = (g.bends ?? []).map((point) => ({ x: point.x + dx, y: point.y + dy }));
   } else {
     g.x += dx; g.y += dy;
   }
@@ -208,8 +216,8 @@ export function overlapsRect(s: DrawShape, r: { x: number; y: number; w: number;
  */
 export function resizeWithHandle(s: DrawShape, key: HandleId, px: number, py: number): DrawShape {
   if (s.kind === 'arrow') {
-    if (key === 'a') return { ...s, x1: px, y1: py };
-    if (key === 'b') return { ...s, x2: px, y2: py };
+    if (key === 'a') return { ...s, x1: px, y1: py, bends: [], ca: null, caSide: null };
+    if (key === 'b') return { ...s, x2: px, y2: py, bends: [], cb: null, cbSide: null };
     return s;
   }
   // rect / dashedRect / circle / text share bbox-resize behaviour.
@@ -265,7 +273,11 @@ function distToSeg(px: number, py: number, ax: number, ay: number, bx: number, b
 export function hitsShape(s: DrawShape, px: number, py: number, tol: number): boolean {
   const t = tol;
   if (s.kind === 'arrow') {
-    return distToSeg(px, py, s.x1, s.y1, s.x2, s.y2) <= Math.max(t, s.strokeWidth);
+    const points = arrowPolylinePoints(s);
+    for (let index = 0; index < points.length - 1; index++) {
+      if (distToSeg(px, py, points[index].x, points[index].y, points[index + 1].x, points[index + 1].y) <= Math.max(t, s.strokeWidth)) return true;
+    }
+    return false;
   }
   if (s.kind === 'circle') {
     const r = rectOf(s);
@@ -328,6 +340,18 @@ export function sidePointsOf(s: DrawShape): SidePoint[] {
   ];
 }
 
+/** Return an exact named connection port on a shape. */
+export function sidePointOf(s: DrawShape, side: SideId): SidePoint {
+  return sidePointsOf(s).find((point) => point.side === side) ?? sidePointsOf(s)[0];
+}
+
+/** Find the closest named connection port to a model-space point. */
+export function nearestSidePoint(s: DrawShape, px: number, py: number): SidePoint {
+  return sidePointsOf(s).reduce((best, point) =>
+    Math.hypot(point.x - px, point.y - py) < Math.hypot(best.x - px, best.y - py) ? point : best
+  );
+}
+
 /**
  * Point where the segment from an outside point `(fx,fy)` enters `s`'s
  * boundary — rectangle edges, or the ellipse perimeter for circles. Attached
@@ -367,6 +391,62 @@ function anchorOf(s: DrawShape | undefined): DrawShape | null {
   return s;
 }
 
+function sideVector(side?: SideId | null): { x: number; y: number } {
+  if (side === 'n') return { x: 0, y: -1 };
+  if (side === 's') return { x: 0, y: 1 };
+  if (side === 'w') return { x: -1, y: 0 };
+  return { x: 1, y: 0 };
+}
+
+/** Build a compact Manhattan route whose first/last segments leave boxes outward. */
+export function orthogonalBends(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  startSide?: SideId | null,
+  endSide?: SideId | null,
+): Array<{ x: number; y: number }> {
+  const stub = 18;
+  const sv = sideVector(startSide);
+  const ev = sideVector(endSide);
+  const a = { x: start.x + sv.x * stub, y: start.y + sv.y * stub };
+  const b = { x: end.x + ev.x * stub, y: end.y + ev.y * stub };
+  const startHorizontal = startSide === 'e' || startSide === 'w' || !startSide;
+  const endHorizontal = endSide === 'e' || endSide === 'w' || !endSide;
+  if (startHorizontal === endHorizontal) {
+    if (startHorizontal) {
+      const midX = (a.x + b.x) / 2;
+      return [a, { x: midX, y: a.y }, { x: midX, y: b.y }, b];
+    }
+    const midY = (a.y + b.y) / 2;
+    return [a, { x: a.x, y: midY }, { x: b.x, y: midY }, b];
+  }
+  return startHorizontal
+    ? [a, { x: b.x, y: a.y }, b]
+    : [a, { x: a.x, y: b.y }, b];
+}
+
+/** Return a guaranteed Manhattan polyline, repairing empty/diagonal legacy routes. */
+export function arrowPolylinePoints(s: DrawShape): Array<{ x: number; y: number }> {
+  const start = { x: s.x1, y: s.y1 };
+  const end = { x: s.x2, y: s.y2 };
+  let bends = s.bends ?? [];
+  const candidate = [start, ...bends, end];
+  const isOrthogonal = bends.length > 0 && candidate.every((point, index) => {
+    if (index === 0) return true;
+    const previous = candidate[index - 1];
+    return Math.abs(previous.x - point.x) < 0.01 || Math.abs(previous.y - point.y) < 0.01;
+  });
+  if (!isOrthogonal) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const horizontal = Math.abs(dx) >= Math.abs(dy);
+    const startSide: SideId = s.caSide ?? (horizontal ? (dx >= 0 ? 'e' : 'w') : (dy >= 0 ? 's' : 'n'));
+    const endSide: SideId = s.cbSide ?? (horizontal ? (dx >= 0 ? 'w' : 'e') : (dy >= 0 ? 'n' : 's'));
+    bends = orthogonalBends(start, end, startSide, endSide);
+  }
+  return [start, ...bends, end];
+}
+
 /**
  * Re-derive the endpoints of every attached arrow from its anchors, and drop
  * anchors that point at a shape that no longer exists (end becomes free). Pure
@@ -381,14 +461,17 @@ export function resolveConnectors(shapes: DrawShape[]): DrawShape[] {
     const b = s.cb ? anchorOf(byId.get(s.cb)) : null;
     const farA = b ? shapeCenter(b) : { x: s.x2, y: s.y2 };
     const farB = a ? shapeCenter(a) : { x: s.x1, y: s.y1 };
-    const pa = a ? clipToShape(a, farA.x, farA.y) : { x: s.x1, y: s.y1 };
-    const pb = b ? clipToShape(b, farB.x, farB.y) : { x: s.x2, y: s.y2 };
+    const pa = a ? (s.caSide ? sidePointOf(a, s.caSide) : clipToShape(a, farA.x, farA.y)) : { x: s.x1, y: s.y1 };
+    const pb = b ? (s.cbSide ? sidePointOf(b, s.cbSide) : clipToShape(b, farB.x, farB.y)) : { x: s.x2, y: s.y2 };
     return {
       ...s,
       ca: a ? s.ca : null,
       cb: b ? s.cb : null,
+      caSide: a ? (s.caSide ?? null) : null,
+      cbSide: b ? (s.cbSide ?? null) : null,
       x1: pa.x, y1: pa.y,
       x2: pb.x, y2: pb.y,
+      bends: a && b ? orthogonalBends(pa, pb, s.caSide, s.cbSide) : (s.bends ?? []),
     };
   });
 }
@@ -468,6 +551,7 @@ export function makeArrowShape(
   return {
     ...blankShape('arrow'), id,
     x1: ax, y1: ay, x2: bx, y2: by,
+    bends: [],
     stroke: st.stroke, strokeWidth: st.strokeWidth, arrowDir: dir,
     labelBg: st.labelBg,
   };
@@ -531,6 +615,13 @@ export function sanitizeShapes(input: unknown): DrawShape[] {
       y1: numOr(o.y1, 0),
       x2: numOr(o.x2, 0),
       y2: numOr(o.y2, 0),
+      bends: Array.isArray(o.bends)
+        ? o.bends.flatMap((point) => {
+            if (!point || typeof point !== 'object') return [];
+            const value = point as Record<string, unknown>;
+            return [{ x: numOr(value.x, 0), y: numOr(value.y, 0) }];
+          }).slice(0, 12)
+        : [],
       fill: strOr(o.fill, '#ffffff'),
       stroke: strOr(o.stroke, '#334155'),
       strokeWidth: Math.max(0.5, numOr(o.strokeWidth, 1.6)),
@@ -538,15 +629,37 @@ export function sanitizeShapes(input: unknown): DrawShape[] {
       arrowDir: o.arrowDir === 'double' ? 'double' : 'single',
       ca: typeof o.ca === 'string' && o.ca ? o.ca : null,
       cb: typeof o.cb === 'string' && o.cb ? o.cb : null,
+      caSide: o.caSide === 'n' || o.caSide === 'e' || o.caSide === 's' || o.caSide === 'w' ? o.caSide : null,
+      cbSide: o.cbSide === 'n' || o.cbSide === 'e' || o.cbSide === 's' || o.cbSide === 'w' ? o.cbSide : null,
       text: strOr(o.text, ''),
       fontSize: Math.max(6, numOr(o.fontSize, 13)),
       color: strOr(o.color, '#1e293b'),
       headerFill: o.headerFill ? strOr(o.headerFill, '') : null,
       labelBg: boolOr(o.labelBg),
     };
+    if (s.kind === 'arrow' && !Array.isArray(o.bends)) {
+      const dx = s.x2 - s.x1;
+      const dy = s.y2 - s.y1;
+      const horizontal = Math.abs(dx) >= Math.abs(dy);
+      const startSide: SideId = horizontal ? (dx >= 0 ? 'e' : 'w') : (dy >= 0 ? 's' : 'n');
+      const endSide: SideId = horizontal ? (dx >= 0 ? 'w' : 'e') : (dy >= 0 ? 'n' : 's');
+      s.bends = orthogonalBends({ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 }, startSide, endSide);
+    }
     out.push(s.kind === 'text' ? refreshTextSize(s) : s);
   }
-  return out;
+  // Older boards stored flow captions as independent text shapes. Fold them
+  // back into their connector so labels follow routing and cannot pile up.
+  const byId = new Map(out.map((shape) => [shape.id, shape]));
+  const mergedLabels = new Set<string>();
+  for (const shape of out) {
+    if (shape.kind !== 'text' || !shape.id.startsWith('flow-label-')) continue;
+    const arrow = byId.get(`flow-${shape.id.slice('flow-label-'.length)}`);
+    if (arrow?.kind === 'arrow') {
+      if (!arrow.text) arrow.text = shape.text;
+      mergedLabels.add(shape.id);
+    }
+  }
+  return out.filter((shape) => !mergedLabels.has(shape.id));
 }
 
 /* ---------------------------------------------------------------- */
@@ -621,44 +734,44 @@ export function flattenArchModel(model: ArchModel): DrawShape[] {
     });
   }
 
-  /* ---- service circles + free labels ---- */
+  /* ---- hosted services: plain text inside the component rectangle ---- */
   for (const a of result.services) {
-    const host = result.components.find((cc) => cc.id === a.componentId);
-    const ring = host ? CATEGORY_STYLE[host.category].stroke : CATEGORY_STYLE.hardware.stroke;
-    const r = a.r || 7;
-    out.push({
-      ...blankShape('circle'),
-      id: `dot-${a.id}`,
-      x: a.cx - r, y: a.cy - r, w: r * 2, h: r * 2,
-      fill: SERVICE_FILL, stroke: ring, strokeWidth: 1.5,
-    });
-    flattenLabel(out, `dot-label-${a.id}`, a.label.x, a.label.y, a.label.text, 12, '#334155', a.label.anchor);
+    flattenLabel(out, `service-label-${a.id}`, a.cx, a.label.y, `— ${a.label.text}`, 12, '#111827', 'start');
   }
 
   /* ---- flows (arrow + optional label pill) ---- */
   for (const f of result.flows) {
+    const semanticFlow = model.flows.find((flow) => flow.id === f.id);
+    const hostId = (endpoint: { kind: 'component' | 'service'; id: string } | undefined): string | null => {
+      if (!endpoint) return null;
+      if (endpoint.kind === 'component') return endpoint.id;
+      return model.services.find((service) => service.id === endpoint.id)?.componentId ?? null;
+    };
+    const sourceHost = hostId(semanticFlow?.source);
+    const targetHost = hostId(semanticFlow?.target);
+    const dx = f.x1 - f.x0;
+    const dy = f.y1 - f.y0;
+    const horizontal = Math.abs(dx) >= Math.abs(dy);
+    const startSide: SideId = horizontal ? (dx >= 0 ? 'e' : 'w') : (dy >= 0 ? 's' : 'n');
+    const endSide: SideId = horizontal ? (dx >= 0 ? 'w' : 'e') : (dy >= 0 ? 'n' : 's');
     out.push({
       ...blankShape('arrow'),
       id: `flow-${f.id}`,
       x1: f.x0, y1: f.y0, x2: f.x1, y2: f.y1,
+      bends: orthogonalBends({ x: f.x0, y: f.y0 }, { x: f.x1, y: f.y1 }, startSide, endSide),
+      ca: sourceHost ? `box-${sourceHost}` : null,
+      cb: targetHost ? `box-${targetHost}` : null,
+      caSide: sourceHost ? startSide : null,
+      cbSide: targetHost ? endSide : null,
+      text: f.label || '',
+      fontSize: 12,
+      color: FLOW_COLOR,
+      labelBg: true,
       stroke: FLOW_COLOR, strokeWidth: 1.7, arrowDir: f.arrow,
     });
-    if (f.label) {
-      flattenLabel(
-        out,
-        `flow-label-${f.id}`,
-        f.labelPoint?.x ?? (f.x0 + f.x1) / 2,
-        f.labelPoint?.y ?? (f.y0 + f.y1) / 2,
-        f.label,
-        12,
-        FLOW_COLOR,
-        'middle',
-        true
-      );
-    }
   }
 
-  return out;
+  return resolveConnectors(out);
 }
 
 /** Font stack reused at render time (export-safe system fonts). */

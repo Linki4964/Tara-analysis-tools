@@ -5,7 +5,7 @@ emits a semantic ArchModel. The frontend auto-layouts it into a standards-compli
 vector architecture image whose glyph set is fixed:
 
 - solid rectangle  -> component  (ECU / gateway / bus / external system ...)
-- circle           -> service / interface hosted on a component
+- solid rectangle  -> component / service / asset / security control
 - dashed rectangle -> boundary / security domain (incl. the surrounding Item frame)
 - arrow (single / double) -> data flow direction (mixed endpoints are allowed:
   service<->service, service<->component, component<->component)
@@ -42,6 +42,15 @@ KIND_CATALOG = [
     ("cellular", "network", "网络", "蜂窝网络 4G / 5G / V2X"),
     ("usb", "network", "网络", "USB 接口"),
     ("protocol", "network", "网络", "私有协议链路"),
+    # ---- 敏感资产（矩形节点，连接到承载/处理组件）----
+    ("data", "asset", "敏感资产", "通用敏感数据 / 控制指令"),
+    ("personal", "asset", "敏感资产", "个人信息 / 隐私数据"),
+    ("location", "asset", "敏感资产", "位置与轨迹数据"),
+    ("key", "asset", "敏感资产", "通信密钥 / 私钥"),
+    ("credential", "asset", "敏感资产", "账户与认证凭据"),
+    ("cert", "asset", "敏感资产", "数字证书"),
+    ("log", "asset", "敏感资产", "安全日志 / 审计记录"),
+    ("firmware_image", "asset", "敏感资产", "固件与 OTA 镜像"),
     # ---- 外部实体（isExternal=true，画在 Item 边界外）----
     ("external", "external", "外部", "外部互联系统"),
     ("actor", "external", "外部", "用户 / 角色（驾驶员 / 运维）"),
@@ -58,7 +67,7 @@ KIND_CATALOG = [
 ]
 
 VALID_KINDS = {entry[0] for entry in KIND_CATALOG}
-VALID_CATEGORIES = ("hardware", "software", "network", "external", "control")
+VALID_CATEGORIES = ("hardware", "software", "network", "external", "asset", "control")
 KIND_TO_CATEGORY = {kind: cat for kind, cat, _cat_cn, _desc in KIND_CATALOG}
 
 # (kind, 说明) —— 服务（部件上的圆形接口）可选的 kind 标注
@@ -93,6 +102,7 @@ _CAT_CN = {
     "software": "软件 / 逻辑单元",
     "network": "通信总线 / 网络",
     "external": "外部实体",
+    "asset": "敏感资产",
     "control": "安全控件",
 }
 
@@ -102,6 +112,7 @@ def _category_guide() -> str:
     lines.append("- `software`：软件 / 逻辑单元（应用、固件、OS、后台服务、中间件等）")
     lines.append("- `network`：通信总线 / 网络（CAN、LIN、FlexRay、以太网、蓝牙、蜂窝等，**必须画成矩形部件**，而不是特殊图形）")
     lines.append("- `external`：外部实体（手机 APP、云 TSP、攻击者、诊断仪等，一律 `isExternal: true`）")
+    lines.append("- `asset`：敏感资产（密钥、证书、固件镜像、控制指令、隐私数据等，必须连到存储或处理组件）")
     lines.append("- `control`：安全控件（防火墙、IDS、HSM、认证、加密、安全存储等）")
     return "\n".join(lines)
 
@@ -110,8 +121,8 @@ def build_diagram_system_prompt() -> str:
     return (
         "你是一名汽车网络安全架构图绘制专家，严格遵循 ISO/SAE 21434 相关项（Item）定义阶段"
         "的架构图规范。你只输出一个合法的 JSON 对象，不要包含 markdown、注释或任何解释文字。"
-        "输出的 JSON 必须完全符合给定的 schema，且只使用四种图元表达：实线矩形=部件、"
-        "圆形=部件上承载的服务/接口、虚线矩形=边界/安全域、单/双箭头=数据流方向。"
+        "输出的 JSON 必须完全符合给定的 schema。图形只使用黑白实线矩形、闭合虚线边界和"
+        "黑色单/双箭头；服务作为矩形内部文字，不使用圆形、颜色、图标、渐变或阴影。"
     )
 
 
@@ -166,18 +177,20 @@ def build_diagram_prompt(
 
 {scope}
 ## 图元与语义规则（务必遵守）
-1. 图形只用四种：**实线矩形 = 部件**；**圆形 = 部件上承载的服务/接口**；**虚线矩形 = 边界/安全域**；**单/双箭头 = 数据流方向**。禁止发明卡片、总线图标等其它多余形状。
+1. 图形严格使用黑白 DFD 表达：**实线矩形 = 部件、软件、服务、总线、外部实体、敏感资产与安全控件**；**闭合虚线矩形 = Item、信任边界或安全域**；**黑色单/双箭头 = 数据流方向**。禁止圆形、椭圆、彩色填充、渐变、阴影、图标和装饰色。
 2. **部件（component）表达一切"宿主"**：ECU、网关、传感器、域控制器、云 TSP、手机 APP、攻击者、防火墙、总线等全部是矩形部件。用 category 区分：
 {_category_guide()}
 3. **总线用 `network` 类部件表达网络拓扑**（如 TBOX → 整车 CAN 总线 → VCU 拆成两条数据流），**不要**用一条数据流直接连两个 ECU 来代替总线。
-4. **服务（service）是部件上承载的、具有安全含义的接口**：只在接口、数据进出点、敏感承载点建立服务（如远程控制、UDS 诊断、OTA 下载、蓝牙配对、鉴权、密钥存储）。服务 `name` 用清晰中文。敏感数据（个人数据、位置、密钥、凭据、日志等）作为服务或数据流标注，**不要**画成独立部件。服务可选 kind：
+4. **服务（service）是部件矩形内部的文字条目，不绘制圆点**：只在接口或功能入口建立服务（如远程控制、UDS 诊断、OTA 下载、蓝牙配对、鉴权）。服务 `name` 使用清晰中文。服务可选 kind：
 {svc_kind_lines}
-5. **边界（boundary）= 安全域 / 信任边界**：用于圈定图内范围与隔离域，`kind` 取 `security_domain`（安全域）或 `trust_boundary`（信任边界）。部件用 `boundaryId` 归属某个边界。
-6. **外部实体一律 `isExternal: true`**（手机 APP、TSP、诊断仪、攻击者等），它们会渲染在 Item 虚线外框之外；从外部到内部的跨边界数据流是允许的（表达穿越信任边界）。
-7. **数据流（flow）方向代表数据流动方向**：`arrow: "single"` = 单向，`arrow: "double"` = 双向。端点**可以灵活混合**：服务↔服务、服务↔部件、部件↔部件都允许，只要语义正确。同宿主（同一部件内）的流没有意义，不要输出。
-8. 边界数量适中（整车图推荐 1~3 个，如"车内部件域""乘客区"），不要用边界包住外部实体。
-9. 命名：部件与服务名使用可辨识的中文；id 用 ASCII 短串（`c-xxx` / `s-xxx` / `b-xxx` / `f-xxx`，最多 64 字符，只用字母数字 `_` `-`），新增 id 必须全局唯一。
-10. {cap_text}
+5. **敏感资产必须显式建模**：密钥、证书、固件镜像、控制指令、隐私数据等用 `category: "asset"` 的实线矩形节点表示，并用数据流连接到存储或处理它的 ECU、HSM 或服务。
+6. **边界（boundary）= 安全域 / 信任边界**：用于圈定图内范围与隔离域，`kind` 取 `security_domain`（安全域）或 `trust_boundary`（信任边界）。部件用 `boundaryId` 归属某个边界。
+7. **外部实体一律 `isExternal: true`**，必须置于 Item 虚线框之外；跨边界数据流用于表达信任边界穿越。
+8. **既有安全控件必须显式建模**：HSM、防火墙、IDS、SecOC、安全启动等用 `category: "control"` 的实线矩形表示，并连接其保护的组件或数据流路径。
+9. **数据流方向代表数据流动方向**：`arrow: "single"` = 单向，`arrow: "double"` = 双向。ECU 之间不得直接相连，必须经 CAN、LIN、以太网等 `network` 节点中介。避免重复、无标签和无安全意义的数据流。
+10. 边界数量适中（整车图推荐 1~3 个），不要用边界包住外部实体。
+11. 命名清晰；id 用 ASCII 短串（最多 64 字符，只用字母数字 `_` `-`），新增 id 必须全局唯一。
+12. {cap_text}
 
 ## 输出 JSON Schema（严格按此结构，不含任何坐标，坐标由前端自动布局）
 {{

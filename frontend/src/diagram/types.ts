@@ -6,7 +6,7 @@
  * coordinates: the frontend auto-layout (`layout.ts`) derives geometry from it.
  */
 
-export type ComponentCategory = 'hardware' | 'software' | 'network' | 'external' | 'control';
+export type ComponentCategory = 'hardware' | 'software' | 'network' | 'external' | 'asset' | 'control';
 export type BoundaryKind = 'security_domain' | 'trust_boundary';
 export type EndpointKind = 'component' | 'service';
 export type ArrowKind = 'single' | 'double';
@@ -163,7 +163,7 @@ export interface DiagramCounts {
 /* Sanitizer: best-effort coercion for JSON import / localStorage      */
 /* ------------------------------------------------------------------ */
 
-const VALID_CATEGORIES: ComponentCategory[] = ['hardware', 'software', 'network', 'external', 'control'];
+const VALID_CATEGORIES: ComponentCategory[] = ['hardware', 'software', 'network', 'external', 'asset', 'control'];
 const VALID_ARROWS: ArrowKind[] = ['single', 'double'];
 
 function cleanStr(v: unknown, limit = 200): string {

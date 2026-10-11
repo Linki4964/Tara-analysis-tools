@@ -80,12 +80,11 @@ function TrashGlyph() {
 
 const TOOLS: { id: ToolId; label: string; tip: string }[] = [
   { id: 'select', label: '选择', tip: '单击选中、拖动移动、拖角改大小；双击文字可编辑；右键打开菜单' },
-  { id: 'rect', label: '矩形', tip: '拖拽画实线矩形（整车部件）' },
-  { id: 'dashedRect', label: '虚线矩形', tip: '拖拽画虚线框（边界 / 安全域）' },
-  { id: 'circle', label: '圆形', tip: '拖拽画圆 / 椭圆（服务、接口）' },
-  { id: 'arrowSingle', label: '单向箭头', tip: '点一个矩形，沿四向连接点拖向其它矩形连单向线；也可在空白处直接拖出' },
-  { id: 'arrowDouble', label: '双向箭头', tip: '同单向箭头，生成两端都有箭头的双向线' },
-  { id: 'text', label: '文字', tip: '点击画面任意位置输入标注文字' },
+  { id: 'rect', label: '矩形', tip: '按住并拖拽绘制实线矩形（整车部件）' },
+  { id: 'dashedRect', label: '虚线矩形', tip: '按住并拖拽绘制虚线框（边界 / 安全域）' },
+  { id: 'arrowSingle', label: '单向箭头', tip: '选择图形后，从端点按住拖到另一图形的端点；空白处可直接拖线' },
+  { id: 'arrowDouble', label: '双向箭头', tip: '选择图形后，从端点按住拖到另一图形的端点' },
+  { id: 'text', label: '文字', tip: '点击放置文字，或拖拽确定较大的输入区域；双击已有文字编辑' },
 ];
 
 export default function Toolbox({ tool, onTool, onDelete, canDelete }: ToolboxProps) {

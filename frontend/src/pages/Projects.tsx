@@ -81,6 +81,7 @@ export default function Projects() {
   const [editName, setEditName] = useState('');
   const [editDocument, setEditDocument] = useState('');
   const [saving, setSaving] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
   const [storageDisabled, setStorageDisabled] = useState(false);
 
   useEffect(() => {
@@ -106,6 +107,31 @@ export default function Projects() {
       .then((res) => setProjects(groupProjects(res.runs || [])))
       .catch(() => setError('加载项目列表失败'))
       .finally(() => setLoading(false));
+  }
+
+  async function handleCreateProject() {
+    if (creatingProject) return;
+    setCreatingProject(true);
+    setError('');
+    try {
+      const now = new Date();
+      const stamp = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+      ].join('') + '-' + [
+        String(now.getHours()).padStart(2, '0'),
+        String(now.getMinutes()).padStart(2, '0'),
+        String(now.getSeconds()).padStart(2, '0'),
+      ].join('');
+      const result = await taraApi.createRun({ projectName: `未命名项目-${stamp}` });
+      if (!result.runId) throw new Error('后端未返回项目编号');
+      navigate('/workspace', { state: { loadRunId: result.runId, startAt: 0 } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '新建项目失败');
+    } finally {
+      setCreatingProject(false);
+    }
   }
 
   function formatDate(iso: string) {
@@ -213,8 +239,9 @@ export default function Projects() {
           <button className="btn-export btn-export--secondary" type="button" onClick={() => navigate('/history')}>
             <History size={16} /> 历史记录
           </button>
-          <button className="btn-export" type="button" onClick={() => navigate('/workspace')}>
-            <Plus size={16} /> 新建分析项目
+          <button className="btn-export" type="button" onClick={handleCreateProject} disabled={creatingProject}>
+            {creatingProject ? <Loader2 className="spinner-icon" size={16} /> : <Plus size={16} />}
+            {creatingProject ? '正在创建…' : '新建分析项目'}
           </button>
         </div>
       </header>

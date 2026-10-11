@@ -4,12 +4,11 @@
  * The semantic ArchModel carries no coordinates; this module derives, for every
  * element, a geometry the SVG renderer (`render.tsx`) consumes directly:
  *
- *  - components  -> solid rounded rectangles; hosted services render as a row of
- *                   small circles ("chips") inside the body. Each circle is the
- *                   service port that data-flows attach to.
+ *  - components  -> solid rectangles; hosted services render as plain text rows
+ *                   inside the body. Data flows attach to the host rectangle.
  *  - boundaries  -> dashed rectangles wrapping their member components
  *  - the item    -> the outer dashed frame, title band at top
- *  - external components -> laid out BELOW the item frame (outside the boundary)
+ *  - external components -> laid out on both sides of the item frame
  *  - flows       -> straight arrows between endpoints; endpoints may be a service
  *                   circle or a component border (service<->service,
  *                   service<->component, component<->component all allowed)
@@ -290,6 +289,17 @@ export function layoutModel(model: ArchModel): LayoutResult {
   }
   const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
 
+  // Component-level layering is also required inside a boundary. Without it,
+  // every member of one security domain collapses into a single tall column.
+  const internalIds = model.components.filter((c) => !c.isExternal).map((c) => c.id);
+  const componentEdges: Array<[string, string]> = [];
+  for (const flow of model.flows) {
+    const source = hostOf(flow.source, model);
+    const target = hostOf(flow.target, model);
+    if (source && target && source !== target) componentEdges.push([source, target]);
+  }
+  const componentLevels = unitLevels(internalIds, componentEdges);
+
   const compBoxes = new Map<string, Rect>(); // local coords (content origin)
   const boundaryFrames: Array<{ id: string; name: string; x: number; y: number; w: number; h: number }> = [];
   let curX = 0;
@@ -318,14 +328,36 @@ export function layoutModel(model: ArchModel): LayoutResult {
       if (!mem.length) continue;
 
       const memberTop = u.kind === 'boundary' ? B_HEADER_H + B_PAD : 0;
-      let y = yC + memberTop;
-      let maxW = 0;
+      const grouped = new Map<number, typeof mem>();
       for (const m of mem) {
-        compBoxes.set(m.id, { x: curX, y, w: m.size.w, h: m.size.h });
-        maxW = Math.max(maxW, m.size.w);
-        y += m.size.h + GAP_Y;
+        const level = componentLevels.get(m.id) ?? 0;
+        const group = grouped.get(level) ?? [];
+        group.push(m);
+        grouped.set(level, group);
       }
-      const contentH = Math.max(0, y - GAP_Y - (yC + memberTop));
+      let memberColumns = [...grouped.keys()].sort((a, b) => a - b).map((level) => grouped.get(level)!);
+      // Cyclic or disconnected diagrams often produce one level. Spread those
+      // across a compact three-column grid instead of a vertical strip.
+      if (memberColumns.length === 1 && mem.length > 3) {
+        memberColumns = [[], [], []];
+        mem.forEach((member, index) => memberColumns[index % 3].push(member));
+      }
+
+      let x = curX;
+      let contentH = 0;
+      let maxW = 0;
+      for (const column of memberColumns) {
+        if (!column.length) continue;
+        const columnW = Math.max(...column.map((m) => m.size.w));
+        let y = yC + memberTop;
+        for (const m of column) {
+          compBoxes.set(m.id, { x, y, w: m.size.w, h: m.size.h });
+          y += m.size.h + GAP_Y;
+        }
+        contentH = Math.max(contentH, y - GAP_Y - (yC + memberTop));
+        x += columnW + GAP_X;
+        maxW = x - curX - GAP_X;
+      }
 
       if (u.kind === 'boundary') {
         const bw = maxW + B_PAD * 2;
@@ -344,34 +376,36 @@ export function layoutModel(model: ArchModel): LayoutResult {
     curX += colW + GAP_X;
   }
 
-  /* ---- place external components below the item frame ------------- */
+  /* ---- place external components on both sides of the item frame --- */
   let extBottom = 0;
   if (extUnits.length) {
     const boxes = extUnits
       .map((u) => ({ id: u.members[0], size: compSize.get(u.members[0]) }))
       .filter((b): b is { id: string; size: { w: number; h: number } } => !!b.size);
     if (boxes.length) {
-      const maxW = Math.max(...boxes.map((b) => b.size.w));
-      const cols = Math.max(2, Math.min(6, boxes.length));
-      const rowTarget = cols * maxW + (cols - 1) * GAP_X;
-      let x = 0;
-      let y = contentBottom + EXT_GAP;
-      let rowW = 0;
-      let rowMaxH = 0;
-      for (const b of boxes) {
-        const need = b.size.w + (rowW > 0 ? GAP_X : 0);
-        if (rowW > 0 && rowW + need > rowTarget) {
-          x = 0;
-          y += rowMaxH + EXT_ROW_GAP;
-          rowW = 0;
-          rowMaxH = 0;
+      let leftY = 0;
+      let rightY = 0;
+      for (let index = 0; index < boxes.length; index++) {
+        const b = boxes[index];
+        const linkedY: number[] = [];
+        for (const flow of model.flows) {
+          const source = hostOf(flow.source, model);
+          const target = hostOf(flow.target, model);
+          const other = source === b.id ? target : target === b.id ? source : '';
+          const otherBox = other ? compBoxes.get(other) : null;
+          if (otherBox) linkedY.push(otherBox.y + otherBox.h / 2);
         }
+        const desiredY = linkedY.length
+          ? linkedY.reduce((sum, value) => sum + value, 0) / linkedY.length - b.size.h / 2
+          : index * (b.size.h + EXT_ROW_GAP);
+        const onLeft = index % 2 === 0;
+        const y = Math.max(desiredY, onLeft ? leftY : rightY);
+        const x = onLeft ? -b.size.w - EXT_GAP : contentW + EXT_GAP;
         compBoxes.set(b.id, { x, y, w: b.size.w, h: b.size.h });
-        x += b.size.w + GAP_X;
-        rowW += need;
-        rowMaxH = Math.max(rowMaxH, b.size.h);
+        if (onLeft) leftY = y + b.size.h + EXT_ROW_GAP;
+        else rightY = y + b.size.h + EXT_ROW_GAP;
+        extBottom = Math.max(extBottom, y + b.size.h);
       }
-      extBottom = y + rowMaxH;
     }
   }
 
@@ -441,17 +475,26 @@ export function layoutModel(model: ArchModel): LayoutResult {
     for (const b of boundaries) b.x += shiftX;
   }
 
+  // Side-positioned external entities may start left of the canvas origin.
+  // Shift the complete drawing together so no box or boundary is clipped.
+  const minCanvasX = Math.min(item.x, ...components.map((c) => c.x), ...boundaries.map((b) => b.x));
+  const canvasShiftX = minCanvasX < MARGIN ? MARGIN - minCanvasX : 0;
+  if (canvasShiftX > 0) {
+    item.x += canvasShiftX;
+    for (const c of components) c.x += canvasShiftX;
+    for (const b of boundaries) b.x += canvasShiftX;
+  }
+
   /* ---- service anchors & flow geometry ---------------------------- */
   const services: ServiceAnchor[] = [];
-  const chipPoint = new Map<string, Pt>();
+  const serviceHost = new Map(model.services.map((service) => [service.id, service.componentId]));
   for (const c of components) {
     const anchors = placeChips(svcByComp.get(c.id) ?? [], c);
     services.push(...anchors);
-    for (const a of anchors) chipPoint.set(a.id, { x: a.cx, y: a.cy });
   }
 
   const compRect = new Map<string, Rect>(components.map((c) => [c.id, c]));
-  const flows = buildFlows(model.flows, compRect, chipPoint, warnings);
+  const flows = buildFlows(model.flows, compRect, serviceHost, warnings);
 
   /* ---- final canvas size ------------------------------------------ */
   const extComps = components.filter((c) => c.isExternal);
@@ -477,9 +520,9 @@ function hostOf(ref: EndpointRef, model: ArchModel): string {
   return svc ? svc.componentId : '';
 }
 
-function endpointCenter(ref: EndpointRef, boxes: Map<string, Rect>, chipPoint: Map<string, Pt>): Pt | null {
-  if (ref.kind === 'service') return chipPoint.get(ref.id) ?? null;
-  const rect = boxes.get(ref.id);
+function endpointCenter(ref: EndpointRef, boxes: Map<string, Rect>, serviceHost: Map<string, string>): Pt | null {
+  const hostId = ref.kind === 'service' ? serviceHost.get(ref.id) : ref.id;
+  const rect = hostId ? boxes.get(hostId) : null;
   if (!rect) return null;
   return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
 }
@@ -493,16 +536,10 @@ function resolveEndpoint(
   ref: EndpointRef,
   other: Pt | null,
   boxes: Map<string, Rect>,
-  chipPoint: Map<string, Pt>
+  serviceHost: Map<string, string>
 ): Pt | null {
-  if (ref.kind === 'service') {
-    const p = chipPoint.get(ref.id);
-    if (!p) return null;
-    if (!other) return p;
-    const { ux, uy } = norm(p, other);
-    return { x: p.x + ux * (DOT_R + 1), y: p.y + uy * (DOT_R + 1) };
-  }
-  const rect = boxes.get(ref.id);
+  const hostId = ref.kind === 'service' ? serviceHost.get(ref.id) : ref.id;
+  const rect = hostId ? boxes.get(hostId) : null;
   if (!rect) return null;
   const center = { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
   if (!other) return center;
@@ -512,21 +549,21 @@ function resolveEndpoint(
 function buildFlows(
   flows: Flow[],
   boxes: Map<string, Rect>,
-  chipPoint: Map<string, Pt>,
+  serviceHost: Map<string, string>,
   warnings: string[]
 ): FlowGeom[] {
   const out: FlowGeom[] = [];
   const pairCount = new Map<string, number>();
 
   for (const f of flows) {
-    const a = endpointCenter(f.source, boxes, chipPoint);
-    const b = endpointCenter(f.target, boxes, chipPoint);
+    const a = endpointCenter(f.source, boxes, serviceHost);
+    const b = endpointCenter(f.target, boxes, serviceHost);
     if (!a || !b) {
       warnings.push(`数据流「${f.label || f.id}」的端点无法定位，已跳过`);
       continue;
     }
-    const src = resolveEndpoint(f.source, b, boxes, chipPoint);
-    const dst = resolveEndpoint(f.target, a, boxes, chipPoint);
+    const src = resolveEndpoint(f.source, b, boxes, serviceHost);
+    const dst = resolveEndpoint(f.target, a, boxes, serviceHost);
     if (!src || !dst) continue;
 
     const { ux, uy, len } = norm(src, dst);

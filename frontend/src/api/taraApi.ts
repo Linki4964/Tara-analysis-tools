@@ -45,6 +45,11 @@ export const taraApi = {
       '/api/extract-item-definition',
       payload
     ),
+  extractDiagramItems: (payload: { projectName?: string; diagram: { name: string; shapes: unknown[] }; runId?: string }) =>
+    post<{ success: boolean; items: ItemDefinition[]; systemDescription: string; itemCount: number; totalFunctions: number; diagramSummary?: { entityCount: number; flowCount: number } }>(
+      '/api/extract-diagram-item-definition',
+      payload
+    ),
   generateDiagram: (payload: {
     projectName?: string;
     description: string;

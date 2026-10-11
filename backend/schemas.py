@@ -62,6 +62,12 @@ class DiagramRequest(BaseModel):
     runId: Optional[str] = None
 
 
+class DiagramItemDefinitionRequest(BaseModel):
+    projectName: Optional[str] = None
+    diagram: dict[str, Any]
+    runId: Optional[str] = None
+
+
 class ExportExcelRequest(BaseModel):
     projectName: Optional[str] = None
     assets: list[dict[str, Any]] = Field(default_factory=list)

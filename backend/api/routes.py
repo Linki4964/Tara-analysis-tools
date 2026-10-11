@@ -9,6 +9,7 @@ from backend.schemas import (
     ApiConfigRequest,
     AssetRequest,
     AttackPathRequest,
+    DiagramItemDefinitionRequest,
     DiagramRequest,
     ExportExcelRequest,
     ItemDefinitionRequest,
@@ -455,6 +456,15 @@ async def asset_import_confirm(payload: dict):
 async def extract_item_definition(request: ItemDefinitionRequest):
     payload = to_payload(request)
     result = run_service(services.extract_item_definition, payload)
+    if isinstance(result, dict) and result.get("success") is not False:
+        await _maybe_save_step(payload.get("runId"), 1, "item_definition", result)
+    return result
+
+
+@router.post("/extract-diagram-item-definition")
+async def extract_diagram_item_definition(request: DiagramItemDefinitionRequest):
+    payload = to_payload(request)
+    result = run_service(services.extract_item_definition_from_diagram, payload)
     if isinstance(result, dict) and result.get("success") is not False:
         await _maybe_save_step(payload.get("runId"), 1, "item_definition", result)
     return result

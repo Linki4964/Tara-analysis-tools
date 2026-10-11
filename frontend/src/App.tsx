@@ -25,7 +25,7 @@ import {
   X
 } from 'lucide-react';
 import { taraApi } from './api/taraApi';
-import { DiagramEmbed } from './pages/Diagram';
+import { DiagramEmbed, type DiagramDocument } from './pages/Diagram';
 import type { ApiProvider, Asset, AttackPath, Health, ItemDefinition, RiskTreatment, Threat, UploadedDocument } from './types/tara';
 import './styles.css';
 
@@ -116,7 +116,16 @@ export default function App() {
 
   // Load a run from history when navigated with loadRunId
   useEffect(() => {
-    const state = location.state as { loadRunId?: string; startAt?: number } | null;
+    const state = location.state as { loadRunId?: string; startAt?: number; diagramItemResult?: { items?: ItemDefinition[]; systemDescription?: string } } | null;
+    if (!state?.loadRunId && state?.diagramItemResult) {
+      const result = state.diagramItemResult;
+      setItems(result.items || []);
+      setItemDefinition(result.systemDescription || '');
+      setSystemDescription(result.systemDescription || '');
+      setCurrentStep(clampStep(state.startAt ?? 1));
+      window.history.replaceState({}, window.document.title);
+      return;
+    }
     if (!state?.loadRunId) return;
     const runId = state.loadRunId;
     const startAt = clampStep(state.startAt);
@@ -315,6 +324,31 @@ export default function App() {
         void persistAfterStep(1, 'item_definition');
       }
     );
+  }
+
+  async function handleDiagramItemExtraction(diagram: DiagramDocument) {
+    setBusy('AI 正在解析架构图并生成相关项定义...');
+    setError('');
+    try {
+      const runId = await ensureRun(projectName || diagram.name);
+      const data = await taraApi.extractDiagramItems({
+        projectName: projectName || diagram.name,
+        diagram,
+        runId: runId || undefined,
+      });
+      setItemDefinition(data.systemDescription);
+      setSystemDescription(data.systemDescription);
+      setItems(data.items || []);
+      setManualItemDefinition(data.systemDescription);
+      setCurrentStep(1);
+      setToast(`已从架构图识别 ${data.itemCount ?? data.items?.length ?? 0} 个相关项`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '架构图 AI 解析失败';
+      setError(message);
+      throw new Error(message);
+    } finally {
+      setBusy('');
+    }
   }
 
   function useManualInput() {
@@ -684,7 +718,7 @@ export default function App() {
                 notify={setToast}
                 onStats={setDiagramNodeCount}
                 onBack={() => navigate('/projects')}
-                onNext={() => setCurrentStep(1)}
+                onNext={handleDiagramItemExtraction}
               />
             </div>
           )

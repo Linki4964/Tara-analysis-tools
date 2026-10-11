@@ -24,6 +24,7 @@ import {
   ArrowRight,
   Download,
   FileJson,
+  LayoutGrid,
   Loader2,
   Menu,
   MessageSquare,
@@ -50,13 +51,14 @@ import type { DrawShape, ShapeKind, ToolId } from '../diagram/shapes';
 import { sanitizeModel } from '../diagram/types';
 import { exportJson, exportPngFile, exportSvgFile } from '../diagram/export';
 import { taraApi } from '../api/taraApi';
+import { arrangeWithElk } from '../diagram/elkLayout';
 
 export interface DiagramEmbedProps {
   runId?: string | null;
   notify?: (msg: string) => void;
   onStats?: (count: number) => void;
   onBack?: () => void;
-  onNext?: () => void;
+  onNext?: (diagram: DiagramDocument) => void | Promise<void>;
 }
 
 const DEFAULT_NAME = '系统架构画板';
@@ -70,10 +72,12 @@ const SUGGEST = '描述整车系统构成，让 AI 画一版架构草图（可�
 
 type LogLine = { kind: 'step' | 'ok' | 'err' | 'think'; text: string };
 
-interface BoardDoc {
+export interface DiagramDocument {
   name: string;
   shapes: DrawShape[];
 }
+
+type BoardDoc = DiagramDocument;
 
 /* ------------------------------------------------------------------ */
 /* Storage (with migration from the old semantic model format)         */
@@ -126,6 +130,8 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
 
   const [chatText, setChatText] = useState('');
   const [sending, setSending] = useState(false);
+  const [analyzingItems, setAnalyzingItems] = useState(false);
+  const [arranging, setArranging] = useState(false);
   const [aiLog, setAiLog] = useState<LogLine[]>([
     { kind: 'think', text: '无限矢量画板：画布没有大小限制，左侧日志/右侧工具/底部输入都悬浮在画布上。右侧选图元直接拖拽绘制；箭头工具点矩形会浮现四向连接点，拖向其它矩形即成智能连线。选中后右键可复制/删除/置顶置底；鼠标中键拖动平移，导航栏按钮调整缩放。也可在底部描述整车架构，让 AI 先画一版草图。' },
   ]);
@@ -257,7 +263,7 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
       const nid = factory(prefixFor(s.kind));
       if (s.kind === 'arrow') {
         // pasted lines become freehand so they don't bind to the original shapes
-        return { ...s, id: nid, ca: null, cb: null, x1: s.x1 + off, y1: s.y1 + off, x2: s.x2 + off, y2: s.y2 + off };
+        return { ...s, id: nid, ca: null, cb: null, caSide: null, cbSide: null, x1: s.x1 + off, y1: s.y1 + off, x2: s.x2 + off, y2: s.y2 + off };
       }
       return { ...s, id: nid, x: s.x + off, y: s.y + off };
     });
@@ -317,6 +323,7 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (target?.closest('button, a, [contenteditable="true"]')) return;
       if (e.key === 'Escape') {
         setCtxMenu(null);
         return;
@@ -333,7 +340,7 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
         if (k === 'x') { e.preventDefault(); cutSelection(); return; }
         if (k === 'v') { e.preventDefault(); pasteClipboard(); return; }
       }
-      if (tool === 'select' && selectedIds.length > 0 && (e.key === 'Delete' || e.key === 'Backspace')) {
+      if (selectedIds.length > 0 && (e.key === 'Enter' || e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault();
         const gone = new Set(selectedIds);
         commitShapes(resolveConnectors(shapes.filter((s) => !gone.has(s.id))));
@@ -432,12 +439,29 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
     setPan({ x: W / 2 - (b.x + b.w / 2) * z, y: H / 2 - (b.y + b.h / 2) * z });
   }, [shapes]);
 
-  /* auto-fit on mount and whenever the board toggles between empty / non-empty */
+  const handleAutoLayout = useCallback(async () => {
+    if (arranging || shapes.length < 2) return;
+    setArranging(true);
+    try {
+      const arranged = await arrangeWithElk(shapes);
+      commitShapes(arranged);
+      setSelectedIds([]);
+      showToast('已使用 ELK 优化画板布局');
+      window.setTimeout(() => fitView(), 40);
+    } catch (error) {
+      showToast(`自动布局失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setArranging(false);
+    }
+  }, [arranging, shapes, commitShapes, fitView, showToast]);
+
+  /* Fit persisted content once on mount. Do not watch `empty`: doing so makes
+     the camera jump and visually centres the first manually-created shape. */
   useEffect(() => {
     const t = window.setTimeout(() => fitView(), 40);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [empty]);
+  }, []);
 
   /* ---------- export ---------- */
   const baseName = doc.name || 'architecture';
@@ -472,6 +496,25 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
     showToast('已清空画布（可撤销）');
   };
 
+  const handleNext = useCallback(async () => {
+    if (!onNext || analyzingItems || !hasContent) return;
+    setAnalyzingItems(true);
+    setLogOpen(true);
+    logLine('step', '正在将架构图 JSON 交给 AI 解析相关项与功能…');
+    try {
+      // Resolve attached connector endpoints before serializing so the backend
+      // receives the latest endpoint-to-endpoint topology.
+      await onNext({ name: doc.name, shapes: resolveConnectors(shapes) });
+      logLine('ok', '相关项定义已生成并保存，正在进入下一环节。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logLine('err', `相关项解析失败：${message}`);
+      showToast(`AI 解析失败：${message}`);
+    } finally {
+      setAnalyzingItems(false);
+    }
+  }, [onNext, analyzingItems, hasContent, doc.name, shapes, logLine, showToast]);
+
   const deleteSelected = useCallback(() => {
     if (!selCount) return;
     const gone = new Set(selectedIds);
@@ -501,8 +544,8 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
             {empty && tool === 'select' && (
               <div className="dc-welcome">
                 <Share2 size={34} />
-                <p>在右侧选择图元，直接在画布上绘制整车架构</p>
-                <p className="dc-welcome-sub">▢ 矩形 · ┅ 虚线框 · ● 圆形 · → 单/双箭头 · A 文字 · 中键拖动平移 · 右键菜单</p>
+                <p>在右侧选择图元，按住并拖拽绘制整车架构</p>
+                <p className="dc-welcome-sub">图形需拖拽创建 · 连线从端点拖到端点 · 双击文字编辑 · 中键平移 · 右键菜单</p>
               </div>
             )}
             {ctxMenu && (
@@ -591,6 +634,9 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
           <button type="button" className="diagram-navbar-iconbtn" title="100%" onClick={() => zoomAtCenter(1)}>
             <span className="arch-navzoom-pct">{Math.round(zoom * 100)}%</span>
           </button>
+          <button type="button" className="diagram-navbar-iconbtn" title="使用 ELK 自动整理布局" onClick={() => void handleAutoLayout()} disabled={arranging || shapes.length < 2}>
+            {arranging ? <Loader2 size={16} className="diagram-chat-spin" /> : <LayoutGrid size={16} />}
+          </button>
           <button type="button" className="diagram-navbar-iconbtn" title="适应视图" onClick={() => fitView()}>
             <Scan size={16} />
           </button>
@@ -598,8 +644,9 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
             {panelOpen ? '收起' : '工具栏'}
           </button>
           {onNext && (
-            <button type="button" className="diagram-navbar-next" onClick={onNext} disabled={!hasContent} title={hasContent ? '进入第 1 步' : '请先在画布上绘制架构图形'}>
-              下一步 <ArrowRight size={16} />
+            <button type="button" className="diagram-navbar-next" onClick={() => void handleNext()} disabled={!hasContent || analyzingItems} title={hasContent ? 'AI 解析架构图并生成相关项定义' : '请先在画布上绘制架构图形'}>
+              {analyzingItems ? <Loader2 size={16} className="diagram-chat-spin" /> : <ArrowRight size={16} />}
+              {analyzingItems ? 'AI 解析中…' : 'AI 解析并进入相关项'}
             </button>
           )}
         </div>
@@ -697,10 +744,16 @@ export function DiagramEmbed(props: DiagramEmbedProps) {
 export default function Diagram() {
   const { runId } = useParams<{ runId?: string }>();
   const navigate = useNavigate();
-  const handleNext = useCallback(() => {
-    // 进入 TARA 向导并在后续步骤继续：带 runId 跳 /workspace，落在第 1 步。
+  const handleNext = useCallback(async (diagram: DiagramDocument) => {
+    const result = await taraApi.extractDiagramItems({
+      projectName: diagram.name,
+      diagram,
+      runId,
+    });
+    if (!result.success) throw new Error('AI 未能生成相关项定义');
+    // 结果已由后端保存为第 1 步；工作区加载该 run 后直接展示。
     if (runId) navigate('/workspace', { state: { loadRunId: runId, startAt: 1 } });
-    else navigate('/workspace'); // 无 runId（直输 /diagram/）：回全新向导
+    else navigate('/workspace', { state: { diagramItemResult: result, startAt: 1 } });
   }, [navigate, runId]);
   return (
     <div className="diagram-page">
