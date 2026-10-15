@@ -9,9 +9,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     }
   });
 
-  const data = await response.json().catch(() => ({}));
+  const raw = await response.text();
+  let data: Record<string, unknown> = {};
+  try {
+    data = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+  } catch {
+    // Proxies and unhandled backend failures can return plain text / HTML.
+    // Preserve that diagnostic instead of throwing a misleading JSON error.
+    throw new Error(raw.trim().slice(0, 500) || `Request failed (${response.status})`);
+  }
   if (!response.ok || data.success === false) {
-    throw new Error(data.message || data.detail || data.error || 'Request failed');
+    throw new Error(String(data.message || data.detail || data.error || 'Request failed'));
   }
   return data as T;
 }

@@ -5,21 +5,18 @@ from zipfile import ZipFile
 import csv
 import io
 import json
+import re
 import xml.etree.ElementTree as ET
 
 from fastapi import HTTPException, UploadFile
 
 
-ALLOWED_EXTENSIONS = {".docx", ".pdf", ".xlsx", ".xls", ".txt", ".json", ".md", ".csv"}
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
 async def extract_upload(file: UploadFile) -> dict[str, Any]:
     filename = file.filename or "uploaded"
     ext = Path(filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        supported = ", ".join(sorted(ALLOWED_EXTENSIONS))
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}. Supported: {supported}")
 
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
@@ -28,23 +25,25 @@ async def extract_upload(file: UploadFile) -> dict[str, Any]:
     extracted_text = ""
     extracted_html = ""
 
-    if ext == ".docx":
-        extracted = _extract_docx(content)
-        extracted_text = extracted["text"]
-        extracted_html = extracted["html"]
-    elif ext == ".pdf":
-        extracted_text = _extract_pdf(content)
-    elif ext in {".xlsx", ".xls"}:
-        extracted_text = _extract_excel(content, ext)
-    else:
-        extracted_text = content.decode("utf-8", errors="replace")
+    try:
+        if ext == ".docx":
+            extracted = _extract_docx(content)
+            extracted_text = extracted["text"]
+            extracted_html = extracted["html"]
+        elif ext == ".pdf":
+            extracted_text = _extract_pdf(content)
+        elif ext in {".xlsx", ".xls"}:
+            extracted_text = _extract_excel(content, ext)
+        else:
+            extracted_text = _extract_generic_text(content, filename)
+    except Exception:
+        # RAG ingestion is intentionally broad: a malformed or uncommon file
+        # still gets indexed through the best-effort generic extractor.
+        extracted_text = _extract_generic_text(content, filename)
 
     extracted_text = extracted_text.strip()
     if len(extracted_text) < 10:
-        raise HTTPException(
-            status_code=400,
-            detail="No text extracted. The file appears to be empty or contains only non-text content.",
-        )
+        extracted_text = f"文件：{filename}\n文件类型：{ext or '未知'}\n未提取到可读文本。"
 
     return {
         "success": True,
@@ -58,7 +57,40 @@ async def extract_upload(file: UploadFile) -> dict[str, Any]:
         },
         "extractedText": extracted_text,
         "extractedHtml": extracted_html or None,
-    }
+}
+
+
+def _extract_generic_text(content: bytes, filename: str) -> str:
+    """Best-effort text extraction for any extension.
+
+    Plain text, HTML, XML, source code, logs and CSV-like files are decoded
+    directly.  For binary formats without a dedicated parser, printable text
+    fragments are recovered so the upload can still be indexed instead of
+    failing solely because of its filename extension.
+    """
+    for encoding in ("utf-8", "utf-16", "gb18030", "big5"):
+        try:
+            decoded = content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        printable = sum(char.isprintable() or char in "\n\r\t" for char in decoded)
+        if decoded and printable / len(decoded) >= 0.72:
+            return decoded
+
+    fragments = re.findall(rb"[\x20-\x7e\x80-\xff]{4,}", content)
+    recovered = []
+    for fragment in fragments[:2000]:
+        for encoding in ("utf-8", "gb18030", "latin-1"):
+            try:
+                value = fragment.decode(encoding).strip()
+                if value:
+                    recovered.append(value)
+                break
+            except UnicodeDecodeError:
+                continue
+    if recovered:
+        return "\n".join(recovered)
+    return f"文件：{filename}\n该文件为二进制或图像格式，未发现可提取的文本片段。"
 
 
 def _extract_docx(content: bytes) -> dict[str, str]:
@@ -145,4 +177,3 @@ def _extract_excel(content: bytes, ext: str) -> str:
         raise
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"Failed to parse Excel file: {error}") from error
-

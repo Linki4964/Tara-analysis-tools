@@ -65,6 +65,19 @@ def _spec(library: str) -> dict[str, Any]:
     return LIBRARIES[library]
 
 
+def _embedding_literal_or_none(text: str) -> str | None:
+    """Return an embedding when available, without blocking knowledge intake.
+
+    RAG documents remain useful for keyword retrieval when the optional local
+    embedding service is offline.  The vector can be regenerated on a later
+    edit once that service is available.
+    """
+    try:
+        return vector_literal(encode_document(text))
+    except (RuntimeError, OSError):
+        return None
+
+
 async def list_entries(library: str, query: str = "", page: int = 1, page_size: int = 20) -> dict[str, Any]:
     spec = _spec(library)
     pool = await get_pool()
@@ -93,13 +106,16 @@ async def create_entry(library: str, payload: dict[str, Any], doc_id: str | None
     if "common_interfaces" in fields and isinstance(values[fields.index("common_interfaces")], str):
         values[fields.index("common_interfaces")] = [x.strip() for x in values[fields.index("common_interfaces")].split(",") if x.strip()]
     searchable = " ".join(str(payload.get(field, "")) for field in spec["text"])
-    fields += ["embedding"]
-    values += [vector_literal(encode_document(searchable))]
+    embedding = _embedding_literal_or_none(searchable)
+    if embedding is not None:
+        fields += ["embedding"]
+        values += [embedding]
     if doc_id and library not in ("golden-cases", "corrections"):
         fields.insert(0, "doc_id")
         values.insert(0, doc_id)
     placeholders = [f"${i}" for i in range(1, len(values) + 1)]
-    placeholders[-1] += "::vector"
+    if embedding is not None:
+        placeholders[-1] += "::vector"
     pool = await get_pool()
     if pool is None:
         raise HTTPException(503, "知识库数据库未配置，请设置 DATABASE_URL")
@@ -123,9 +139,13 @@ async def update_entry(library: str, entry_id: str, payload: dict[str, Any]) -> 
         merged = dict(current)
         merged.update(payload)
         searchable = " ".join(str(merged.get(field, "")) for field in spec["text"])
-        values = [payload[field] for field in fields] + [vector_literal(encode_document(searchable)), entry_id]
+        embedding = _embedding_literal_or_none(searchable)
+        values = [payload[field] for field in fields]
         sets = [f"{field}=${i}" for i, field in enumerate(fields, 1)]
-        sets.append(f"embedding=${len(fields)+1}::vector")
+        if embedding is not None:
+            values.append(embedding)
+            sets.append(f"embedding=${len(values)}::vector")
+        values.append(entry_id)
         row = await conn.fetchrow(f'UPDATE {spec["table"]} SET {", ".join(sets)} WHERE id=${len(values)}::uuid RETURNING *', *values)
     return _serialize(row)
 
@@ -144,17 +164,26 @@ async def search(library: str, query: str, top_k: int = 5) -> list[dict[str, Any
     spec = _spec(library)
     if not query.strip():
         raise HTTPException(422, "query is required")
-    vector = vector_literal(encode_query(query))
     joined = " || ' ' || ".join(f"COALESCE({field}::text, '')" for field in spec["text"])
     pool = await get_pool()
     if pool is None:
         raise HTTPException(503, "知识库数据库未配置，请设置 DATABASE_URL")
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f'''SELECT *, (0.72 * (1 - (embedding <=> $1::vector)) +
-                0.28 * CASE WHEN ({joined}) ILIKE $2 THEN 1 ELSE 0 END) AS relevance
-                FROM {spec["table"]} WHERE embedding IS NOT NULL
-                ORDER BY relevance DESC LIMIT $3''', vector, f"%{query}%", min(max(top_k, 1), 30))
+        try:
+            vector = vector_literal(encode_query(query))
+        except (RuntimeError, OSError):
+            vector = None
+        if vector is None:
+            rows = await conn.fetch(
+                f'''SELECT *, CASE WHEN ({joined}) ILIKE $1 THEN 1 ELSE 0 END AS relevance
+                    FROM {spec["table"]} WHERE ({joined}) ILIKE $1
+                    ORDER BY created_at DESC LIMIT $2''', f"%{query}%", min(max(top_k, 1), 30))
+        else:
+            rows = await conn.fetch(
+                f'''SELECT *, (0.72 * (1 - (embedding <=> $1::vector)) +
+                    0.28 * CASE WHEN ({joined}) ILIKE $2 THEN 1 ELSE 0 END) AS relevance
+                    FROM {spec["table"]} WHERE embedding IS NOT NULL
+                    ORDER BY relevance DESC LIMIT $3''', vector, f"%{query}%", min(max(top_k, 1), 30))
     return [_serialize(row) for row in rows]
 
 

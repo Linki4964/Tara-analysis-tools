@@ -85,6 +85,8 @@ export default function App() {
   const [optionalInfo, setOptionalInfo] = useState('');
   const [threatContext, setThreatContext] = useState('');
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [pendingAssets, setPendingAssets] = useState<Asset[]>([]);
+  const [showAssetReview, setShowAssetReview] = useState(false);
   const [threats, setThreats] = useState<Threat[]>([]);
   const [attackPaths, setAttackPaths] = useState<AttackPath[]>([]);
   const [riskTreatments, setRiskTreatments] = useState<RiskTreatment[]>([]);
@@ -340,8 +342,16 @@ export default function App() {
       setSystemDescription(data.systemDescription);
       setItems(data.items || []);
       setManualItemDefinition(data.systemDescription);
-      setCurrentStep(1);
-      setToast(`已从架构图识别 ${data.itemCount ?? data.items?.length ?? 0} 个相关项`);
+      setBusy('AI 正在根据架构图识别资产...');
+      const assetData = await taraApi.generateAssets({
+        projectName: projectName || diagram.name,
+        systemDescription: data.systemDescription,
+        optionalInfo,
+        runId: runId || undefined,
+      });
+      setPendingAssets(assetData.assets || []);
+      setShowAssetReview(true);
+      setToast(`已识别 ${assetData.assets?.length ?? 0} 个资产，请在右下角审核确认。`);
     } catch (err) {
       const message = err instanceof Error ? err.message : '架构图 AI 解析失败';
       setError(message);
@@ -375,11 +385,44 @@ export default function App() {
         return taraApi.generateAssets({ projectName, systemDescription, optionalInfo, runId: runId || undefined });
       },
       (data) => {
-        setAssets(data.assets || []);
-        setCurrentStep(3);
-        void persistAfterStep(2, 'assets');
+        setPendingAssets(data.assets || []);
+        setShowAssetReview(true);
+        setToast('AI 资产识别完成，请先审核确认。');
       }
     );
+  }
+
+  function updatePendingAsset(index: number, field: keyof Asset, value: string) {
+    setPendingAssets((current) => current.map((asset, assetIndex) => (
+      assetIndex === index ? { ...asset, [field]: value } : asset
+    )));
+  }
+
+  function removePendingAsset(index: number) {
+    setPendingAssets((current) => current.filter((_, assetIndex) => assetIndex !== index));
+  }
+
+  function addPendingAsset() {
+    setPendingAssets((current) => [...current, {
+      assetId: `AS_MAN_${String(current.length + 1).padStart(3, '0')}`,
+      assetName: '新资产',
+      assetType: '数据',
+      description: '',
+      valueRationale: '',
+      securityProperties: { confidentiality: false, integrity: false, availability: false, authenticity: false },
+      damageScenarios: [],
+    }]);
+  }
+
+  function confirmAssets() {
+    if (!pendingAssets.length) {
+      setError('请至少保留一个资产后再确认。');
+      return;
+    }
+    setAssets(pendingAssets);
+    setShowAssetReview(false);
+    void persistAfterStep(2, 'assets');
+    setToast(`已确认 ${pendingAssets.length} 个资产，可进入下一步。`);
   }
 
   function handleAnalyzeThreats() {
@@ -718,7 +761,9 @@ export default function App() {
                 notify={setToast}
                 onStats={setDiagramNodeCount}
                 onBack={() => navigate('/projects')}
-                onNext={handleDiagramItemExtraction}
+                onEnsureRun={async (diagramName) => { await ensureRun(projectName || diagramName); }}
+                onAnalyze={handleDiagramItemExtraction}
+                onNext={() => setCurrentStep(1)}
               />
             </div>
           )
@@ -800,11 +845,15 @@ export default function App() {
                   <textarea className="form-textarea form-textarea--small" rows={4} value={optionalInfo} onChange={(event) => setOptionalInfo(event.target.value)} />
                 </Field>
                 <button className="btn-generate" type="button" onClick={handleGenerateAssets} disabled={Boolean(busy)}>
-                  <Activity size={20} /> 生成资产清单
+                  <Activity size={20} /> AI 解析资产
+                </button>
+                <button className="btn-generate btn-generate--secondary" type="button" onClick={() => setCurrentStep(3)} disabled={Boolean(busy) || assets.length === 0}>
+                  <ChevronRight size={20} /> 进入威胁分析
                 </button>
                 <button className="btn-generate btn-generate--secondary" type="button" onClick={handleRunFullAnalysis} disabled={Boolean(busy)}>
                   <ShieldCheck size={20} /> 一键完整分析
                 </button>
+                {pendingAssets.length > 0 && !showAssetReview && <button className="btn-link" type="button" onClick={() => setShowAssetReview(true)}>继续审核 AI 识别结果（{pendingAssets.length}）</button>}
                 <BusyBlock busy={busy} match={['正在分析系统并识别资产...']} />
               </>
             }
@@ -882,6 +931,8 @@ export default function App() {
         )}
       </main>
 
+      {showAssetReview && <AssetReviewPopover assets={pendingAssets} onClose={() => setShowAssetReview(false)} onAdd={addPendingAsset} onRemove={removePendingAsset} onChange={updatePendingAsset} onConfirm={confirmAssets} />}
+
       {showExportModal && (
         <div className="modal">
           <button className="modal-overlay" type="button" onClick={() => setShowExportModal(false)} aria-label="关闭" />
@@ -907,6 +958,41 @@ export default function App() {
 
       {toast && <div className="toast toast--visible">{toast}</div>}
     </div>
+  );
+}
+
+function AssetReviewPopover({ assets, onClose, onAdd, onRemove, onChange, onConfirm }: {
+  assets: Asset[];
+  onClose: () => void;
+  onAdd: () => void;
+  onRemove: (index: number) => void;
+  onChange: (index: number, field: keyof Asset, value: string) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <aside className="asset-review-popover" aria-label="AI 资产审核">
+      <div className="asset-review-header">
+        <div><strong>审核 AI 识别资产</strong><span>确认后将用于后续威胁分析</span></div>
+        <button className="asset-review-close" type="button" onClick={onClose} aria-label="暂时关闭审核"><X size={18} /></button>
+      </div>
+      <div className="asset-review-list">
+        {assets.map((asset, index) => (
+          <section className="asset-review-item" key={`${asset.assetId}-${index}`}>
+            <div className="asset-review-item-head"><span>资产 {index + 1}</span><button className="asset-review-remove" type="button" onClick={() => onRemove(index)}>删除</button></div>
+            <input className="form-input" aria-label={`资产 ${index + 1} 名称`} value={asset.assetName} onChange={(event) => onChange(index, 'assetName', event.target.value)} placeholder="资产名称" />
+            <div className="asset-review-row">
+              <input className="form-input" aria-label={`资产 ${index + 1} 编号`} value={asset.assetId} onChange={(event) => onChange(index, 'assetId', event.target.value)} placeholder="资产编号" />
+              <input className="form-input" aria-label={`资产 ${index + 1} 类型`} value={asset.assetType} onChange={(event) => onChange(index, 'assetType', event.target.value)} placeholder="资产类型" />
+            </div>
+            <textarea className="form-textarea form-textarea--small" rows={2} value={asset.description} onChange={(event) => onChange(index, 'description', event.target.value)} placeholder="资产说明" />
+          </section>
+        ))}
+      </div>
+      <div className="asset-review-actions">
+        <button className="btn-export btn-export--secondary" type="button" onClick={onAdd}><Plus size={16} /> 手动新增</button>
+        <button className="btn-export" type="button" onClick={onConfirm} disabled={assets.length === 0}><Check size={16} /> 确认资产</button>
+      </div>
+    </aside>
   );
 }
 

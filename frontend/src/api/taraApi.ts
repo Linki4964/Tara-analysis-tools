@@ -135,8 +135,11 @@ export const taraApi = {
   ingestKnowledge: async (file: File, target = '') => {
     const body = new FormData(); body.append('file', file);
     const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/knowledge-ingest${target ? `?target=${encodeURIComponent(target)}` : ''}`, { method: 'POST', body });
-    const data = await response.json();
-    if (!response.ok || data.success === false) throw new Error(data.message || data.detail || '导入失败');
+    const raw = await response.text();
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(raw) as Record<string, unknown>; }
+    catch { throw new Error(raw.trim().slice(0, 500) || `导入失败（HTTP ${response.status}）`); }
+    if (!response.ok || data.success === false) throw new Error(String(data.message || data.detail || '导入失败'));
     return data as { success: boolean; library: string; chunkCount: number; duplicate: boolean };
   },
   assetOverview: () => get<{ success: boolean; total: number; byType: Record<string, number>; topComponents: [string, number][]; topInterfaces: [string, number][] }>('/api/asset-overview'),

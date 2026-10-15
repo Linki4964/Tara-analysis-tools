@@ -107,6 +107,12 @@ def _is_balanced(text: str, open_char: str, close_char: str) -> bool:
 
 def _fix_common_json_issues(text: str) -> str:
     """Apply aggressive fixes for common LLM JSON formatting issues."""
+    # Some models put literal double quotes in Chinese prose (for example in
+    # an attack-step description) without escaping them.  A strict parser then
+    # treats the quote as the end of the value and reports "Expecting ','" at
+    # a later line.  This repair is only used after strict parsing failed.
+    text = _escape_unescaped_quotes_in_string_values(text)
+
     # Remove trailing commas before } or ]
     text = re.sub(r",\s*(\}|\])", r"\1", text)
 
@@ -136,6 +142,50 @@ def _fix_common_json_issues(text: str) -> str:
     text = _repair_truncation(text)
 
     return text
+
+
+def _escape_unescaped_quotes_in_string_values(text: str) -> str:
+    """Escape quote characters that occur inside an otherwise open JSON string.
+
+    A legitimate closing quote is followed (ignoring whitespace) by a JSON
+    delimiter: ``:``, ``,`, ``}``, ``]`` or the end of the response.  Any other
+    quote while a string is open is prose supplied by the model and is escaped.
+    Valid JSON never reaches this function because it is parsed first.
+    """
+    output: list[str] = []
+    in_string = False
+    escaped = False
+    length = len(text)
+
+    for index, char in enumerate(text):
+        if escaped:
+            output.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            output.append(char)
+            escaped = True
+            continue
+        if char != '"':
+            output.append(char)
+            continue
+
+        if not in_string:
+            in_string = True
+            output.append(char)
+            continue
+
+        cursor = index + 1
+        while cursor < length and text[cursor].isspace():
+            cursor += 1
+        next_char = text[cursor] if cursor < length else ""
+        if next_char in {":", ",", "}", "]", ""}:
+            in_string = False
+            output.append(char)
+        else:
+            output.append('\\"')
+
+    return "".join(output)
 
 
 def _repair_truncation(text: str) -> str:

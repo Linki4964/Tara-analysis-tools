@@ -58,6 +58,8 @@ export interface DiagramEmbedProps {
   notify?: (msg: string) => void;
   onStats?: (count: number) => void;
   onBack?: () => void;
+  onEnsureRun?: (diagramName: string) => void | Promise<void>;
+  onAnalyze?: (diagram: DiagramDocument) => void | Promise<void>;
   onNext?: (diagram: DiagramDocument) => void | Promise<void>;
 }
 
@@ -120,9 +122,10 @@ function loadStored(key: string): BoardDoc {
   }
 }
 
-function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedProps) {
+function DiagramInner({ runId, notify, onStats, onBack, onEnsureRun, onAnalyze, onNext }: DiagramEmbedProps) {
   const keyRef = useRef(storageKey(runId));
   const [doc, setDoc] = useState<BoardDoc>(() => loadStored(keyRef.current));
+  const docRef = useRef(doc);
   const shapes = doc.shapes;
 
   const [past, setPast] = useState<DrawShape[][]>([]);
@@ -131,6 +134,7 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
   const [chatText, setChatText] = useState('');
   const [sending, setSending] = useState(false);
   const [analyzingItems, setAnalyzingItems] = useState(false);
+  const [itemsReady, setItemsReady] = useState(false);
   const [arranging, setArranging] = useState(false);
   const [aiLog, setAiLog] = useState<LogLine[]>([
     { kind: 'think', text: '无限矢量画板：画布没有大小限制，左侧日志/右侧工具/底部输入都悬浮在画布上。右侧选图元直接拖拽绘制；箭头工具点矩形会浮现四向连接点，拖向其它矩形即成智能连线。选中后右键可复制/删除/置顶置底；鼠标中键拖动平移，导航栏按钮调整缩放。也可在底部描述整车架构，让 AI 先画一版草图。' },
@@ -152,6 +156,7 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
   const logRef = useRef<HTMLDivElement>(null);
   const persistTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const creatingRunRef = useRef(false);
 
   const nonText = useMemo(() => shapes.filter((s) => s.kind !== 'text').length, [shapes]);
   const hasContent = nonText > 0;
@@ -166,6 +171,7 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
 
   /* ---------- persistence (debounced) ---------- */
   useEffect(() => {
+    docRef.current = doc;
     if (persistTimer.current) window.clearTimeout(persistTimer.current);
     persistTimer.current = window.setTimeout(() => {
       try {
@@ -179,6 +185,36 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc]);
+
+  // A diagram can be drawn before the project has a persisted run ID.  When
+  // the run is created, move that temporary board to the run-specific key so
+  // reopening the project restores the same diagram instead of an empty one.
+  useEffect(() => {
+    const nextKey = storageKey(runId);
+    if (nextKey === keyRef.current) return;
+
+    const savedForRun = loadStored(nextKey);
+    const currentDoc = docRef.current;
+    const nextDoc = savedForRun.shapes.length > 0 ? savedForRun : currentDoc;
+    keyRef.current = nextKey;
+    setDoc(nextDoc);
+    try {
+      window.localStorage.setItem(nextKey, JSON.stringify(nextDoc));
+    } catch {
+      /* storage full / unavailable — normal debounced persistence will retry */
+    }
+  }, [runId]);
+
+  // Create the project record as soon as the user has drawn meaningful
+  // content.  Otherwise a brand-new board only has a temporary browser key
+  // and cannot be reopened from the project list after the user leaves.
+  useEffect(() => {
+    if (runId || !onEnsureRun || nonText === 0 || creatingRunRef.current) return;
+    creatingRunRef.current = true;
+    Promise.resolve(onEnsureRun(doc.name)).catch(() => {
+      creatingRunRef.current = false;
+    });
+  }, [runId, onEnsureRun, nonText, doc.name]);
 
   /* ---------- stats to parent ---------- */
   useEffect(() => {
@@ -496,16 +532,17 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
     showToast('已清空画布（可撤销）');
   };
 
-  const handleNext = useCallback(async () => {
-    if (!onNext || analyzingItems || !hasContent) return;
+  const handleAnalyzeItems = useCallback(async () => {
+    if (!onAnalyze || analyzingItems || !hasContent) return;
     setAnalyzingItems(true);
     setLogOpen(true);
     logLine('step', '正在将架构图 JSON 交给 AI 解析相关项与功能…');
     try {
       // Resolve attached connector endpoints before serializing so the backend
       // receives the latest endpoint-to-endpoint topology.
-      await onNext({ name: doc.name, shapes: resolveConnectors(shapes) });
-      logLine('ok', '相关项定义已生成并保存，正在进入下一环节。');
+      await onAnalyze({ name: doc.name, shapes: resolveConnectors(shapes) });
+      setItemsReady(true);
+      logLine('ok', '相关项定义已生成，请审核后进入下一步。');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logLine('err', `相关项解析失败：${message}`);
@@ -513,7 +550,12 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
     } finally {
       setAnalyzingItems(false);
     }
-  }, [onNext, analyzingItems, hasContent, doc.name, shapes, logLine, showToast]);
+  }, [onAnalyze, analyzingItems, hasContent, doc.name, shapes, logLine, showToast]);
+
+  const handleNext = useCallback(async () => {
+    if (!onNext || analyzingItems) return;
+    await onNext({ name: doc.name, shapes: resolveConnectors(shapes) });
+  }, [onNext, analyzingItems, doc.name, shapes]);
 
   const deleteSelected = useCallback(() => {
     if (!selCount) return;
@@ -643,10 +685,15 @@ function DiagramInner({ runId, notify, onStats, onBack, onNext }: DiagramEmbedPr
           <button type="button" className="diagram-navbar-pill" onClick={() => setPanelOpen((v) => !v)}>
             {panelOpen ? '收起' : '工具栏'}
           </button>
-          {onNext && (
-            <button type="button" className="diagram-navbar-next" onClick={() => void handleNext()} disabled={!hasContent || analyzingItems} title={hasContent ? 'AI 解析架构图并生成相关项定义' : '请先在画布上绘制架构图形'}>
+          {onAnalyze && (
+            <button type="button" className="diagram-navbar-next" onClick={() => void handleAnalyzeItems()} disabled={!hasContent || analyzingItems} title={hasContent ? 'AI 解析架构图并生成相关项定义' : '请先在画布上绘制架构图形'}>
               {analyzingItems ? <Loader2 size={16} className="diagram-chat-spin" /> : <ArrowRight size={16} />}
-              {analyzingItems ? 'AI 解析中…' : 'AI 解析并进入相关项'}
+              {analyzingItems ? 'AI 解析中…' : 'AI 解析'}
+            </button>
+          )}
+          {onNext && (
+            <button type="button" className="diagram-navbar-next" onClick={() => void handleNext()} disabled={analyzingItems} title="进入相关项定义">
+              <ArrowRight size={16} /> 进入相关项
             </button>
           )}
         </div>
@@ -744,24 +791,22 @@ export function DiagramEmbed(props: DiagramEmbedProps) {
 export default function Diagram() {
   const { runId } = useParams<{ runId?: string }>();
   const navigate = useNavigate();
-  const handleNext = useCallback(async (diagram: DiagramDocument) => {
+  const handleAnalyze = useCallback(async (diagram: DiagramDocument) => {
     const result = await taraApi.extractDiagramItems({
       projectName: diagram.name,
       diagram,
       runId,
     });
     if (!result.success) throw new Error('AI 未能生成相关项定义');
-    // 结果已由后端保存为第 1 步；工作区加载该 run 后直接展示。
-    if (runId) navigate('/workspace', { state: { loadRunId: runId, startAt: 1 } });
-    else navigate('/workspace', { state: { diagramItemResult: result, startAt: 1 } });
-  }, [navigate, runId]);
+  }, [runId]);
   return (
     <div className="diagram-page">
       <DiagramInner
         runId={runId}
         notify={undefined}
         onBack={() => navigate('/projects')}
-        onNext={handleNext}
+        onAnalyze={handleAnalyze}
+        onNext={() => navigate('/workspace', { state: runId ? { loadRunId: runId, startAt: 1 } : { startAt: 1 } })}
       />
     </div>
   );

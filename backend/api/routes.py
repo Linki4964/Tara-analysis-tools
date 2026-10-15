@@ -1,7 +1,7 @@
 from time import perf_counter
 from urllib.parse import quote
 
-from fastapi import APIRouter, UploadFile, File, Query
+from fastapi import APIRouter, UploadFile, File, Query, HTTPException
 from fastapi.responses import JSONResponse, Response
 from fastapi.concurrency import run_in_threadpool
 
@@ -408,14 +408,19 @@ async def knowledge_search(library: str, payload: dict):
 
 @router.post("/knowledge-ingest")
 async def knowledge_ingest(file: UploadFile = File(...), target: str | None = None):
-    content = await file.read()
-    await file.seek(0)
-    extracted = await extract_upload(file)
-    result = await knowledge.ingest_text(
-        extracted["metadata"]["filename"], extracted["metadata"]["fileType"], content,
-        extracted["extractedText"], target,
-    )
-    return {"success": True, **result}
+    try:
+        content = await file.read()
+        await file.seek(0)
+        extracted = await extract_upload(file)
+        result = await knowledge.ingest_text(
+            extracted["metadata"]["filename"], extracted["metadata"]["fileType"], content,
+            extracted["extractedText"], target,
+        )
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except Exception as error:
+        return JSONResponse(status_code=500, content={"success": False, "message": f"知识文件导入失败：{error}"})
 
 
 @router.get("/asset-overview")
